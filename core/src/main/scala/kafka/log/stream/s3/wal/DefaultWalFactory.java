@@ -52,8 +52,12 @@ public class DefaultWalFactory implements WalFactory {
 
     @Override
     public WriteAheadLog build(IdURI uri, BuildOptions options) {
-        //noinspection SwitchStatementWithTooFewBranches
         switch (uri.protocol().toUpperCase(Locale.ENGLISH)) {
+            // HDFS shares the object-storage WAL path with S3: ObjectWALService only depends on the ObjectStorage
+            // interface, which ObjectStorageFactory now provides for the "hdfs" protocol.
+            // NOTE: a WebHDFS/HttpFS gateway adds latency; prefer a low-latency WAL (local/EBS/native object store)
+            // for latency-sensitive workloads and use HDFS WAL only when the deployment requires it.
+            case "HDFS":
             case "S3":
                 BucketURI bucketURI = to(uri);
                 ObjectStorage walObjectStorage = ObjectStorageFactory.instance()

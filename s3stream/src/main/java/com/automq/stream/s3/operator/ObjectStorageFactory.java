@@ -57,6 +57,17 @@ public class ObjectStorageFactory {
                 LocalFileObjectStorage.builder()
                     .bucket(builder.bucket)
                     .build());
+        ObjectStorageFactory.instance()
+            .registerProtocolHandler("hdfs", builder ->
+                HdfsObjectStorage.builder()
+                    .bucket(builder.bucket)
+                    .tagging(builder.tagging)
+                    .inboundLimiter(builder.inboundLimiter)
+                    .outboundLimiter(builder.outboundLimiter)
+                    .readWriteIsolate(builder.readWriteIsolate)
+                    .checkMode(builder.checkS3ApiModel)
+                    .threadPrefix(builder.threadPrefix)
+                    .build());
     }
 
     private ObjectStorageFactory() {

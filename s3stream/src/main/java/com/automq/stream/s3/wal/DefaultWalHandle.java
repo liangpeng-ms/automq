@@ -39,9 +39,10 @@ public class DefaultWalHandle implements WalHandle {
     @Override
     public CompletableFuture<Void> acquirePermission(int nodeId, long nodeEpoch, IdURI walConfig,
         AcquirePermissionOptions options) {
-        //noinspection SwitchStatementWithTooFewBranches
         switch (walConfig.protocol().toUpperCase(Locale.ENGLISH)) {
-            case "S3": {
+            // HDFS shares the object-storage WAL reservation path with S3 (both go through ObjectStorage).
+            case "S3":
+            case "HDFS": {
                 return acquireObjectWALPermission(nodeId, nodeEpoch, walConfig, options);
             }
             default: {
@@ -52,9 +53,9 @@ public class DefaultWalHandle implements WalHandle {
 
     @Override
     public CompletableFuture<Void> releasePermission(IdURI walConfig, ReleasePermissionOptions options) {
-        //noinspection SwitchStatementWithTooFewBranches
         switch (walConfig.protocol().toUpperCase(Locale.ENGLISH)) {
-            case "S3": {
+            case "S3":
+            case "HDFS": {
                 return CompletableFuture.completedFuture(null);
             }
             default: {

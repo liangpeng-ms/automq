@@ -2323,6 +2323,7 @@ project(':s3stream') {
     implementation 'org.hdrhistogram:HdrHistogram:2.2.2'
     implementation 'software.amazon.awssdk.crt:aws-crt:0.30.8'
     implementation 'com.ibm.async:asyncutil:0.1.0'
+    implementation 'com.azure:azure-identity:1.18.4'
 
     testImplementation 'org.slf4j:slf4j-simple:1.7.36'
     testImplementation libs.junitJupiter
