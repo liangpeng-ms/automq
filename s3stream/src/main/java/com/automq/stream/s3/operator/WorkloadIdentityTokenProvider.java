@@ -22,6 +22,7 @@ package com.automq.stream.s3.operator;
 import com.azure.core.credential.AccessToken;
 import com.azure.core.credential.TokenCredential;
 import com.azure.core.credential.TokenRequestContext;
+import com.azure.core.http.jdk.httpclient.JdkHttpClientBuilder;
 import com.azure.identity.WorkloadIdentityCredentialBuilder;
 
 import org.apache.commons.lang3.StringUtils;
@@ -46,7 +47,11 @@ public class WorkloadIdentityTokenProvider implements Supplier<String> {
     private final String scope;
 
     public WorkloadIdentityTokenProvider(String scope) {
-        this(new WorkloadIdentityCredentialBuilder().build(), scope);
+        this(new WorkloadIdentityCredentialBuilder()
+            // Force the JDK HttpClient so azure-identity does not load the netty-based
+            // provider (which clashes with Kafka's bundled netty at runtime).
+            .httpClient(new JdkHttpClientBuilder().build())
+            .build(), scope);
     }
 
     WorkloadIdentityTokenProvider(TokenCredential credential, String scope) {

@@ -44,9 +44,11 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 import io.netty.buffer.ByteBuf;
@@ -60,7 +62,7 @@ import io.netty.buffer.Unpooled;
  * implemented, each mapped onto a WebHDFS operation:
  * <ul>
  *     <li>range read      -&gt; {@code op=OPEN&offset&length}</li>
- *     <li>write           -&gt; {@code op=CREATE&overwrite=true}</li>
+ *     <li>write           -&gt; temp {@code op=CREATE} then atomic {@code op=RENAME} (S3-like atomic publish)</li>
  *     <li>multipart part  -&gt; {@code op=CREATE} temp part file</li>
  *     <li>complete        -&gt; assemble parts (CREATE + APPEND) then atomic {@code op=RENAME&renameoptions=OVERWRITE}</li>
  *     <li>list            -&gt; recursive {@code op=LISTSTATUS}</li>
@@ -101,6 +103,8 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
     private final Duration requestTimeout;
     /** Supplies the current Entra ID bearer token; must be refreshable in production. */
     private final Supplier<String> tokenSupplier;
+    /** Directories already MKDIRS'd, so repeated hot-path writes to the same dir skip a redundant MKDIRS. */
+    private final Set<String> ensuredDirs = ConcurrentHashMap.newKeySet();
 
     public HdfsObjectStorage(BucketURI bucketURI, Map<String, String> tagging,
         NetworkBandwidthLimiter inboundLimiter, NetworkBandwidthLimiter outboundLimiter,
@@ -169,7 +173,24 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
 
     @Override
     CompletableFuture<Void> doWrite(WriteOptions options, String path, ByteBuf data) {
-        return create(dataRel(path), toBytes(data), true);
+        return writeAtomic(dataRel(path), toBytes(data));
+    }
+
+    /**
+     * Atomically publishes an object: write the bytes to a unique temp file, then {@code op=RENAME} (an atomic
+     * NameNode metadata operation) it onto the final path. This mirrors S3 PutObject's all-or-nothing visibility
+     * that WAL recovery assumes: a broker killed mid-write can only leave a stray, never-listed temp file under
+     * {@code tmp/}, never a truncated object under {@code data/} that would make {@code RecoverIterator} fail.
+     */
+    private CompletableFuture<Void> writeAtomic(String rel, byte[] body) {
+        String stagingRel = tmpRel(UUID.randomUUID().toString());
+        String parent = parentRel(rel);
+        CompletableFuture<Void> ensureParent = parent == null
+            ? CompletableFuture.completedFuture(null)
+            : ensureDir(parent);
+        return ensureParent
+            .thenCompose(v -> create(stagingRel, body, true))
+            .thenCompose(v -> renameTo(stagingRel, rel));
     }
 
     private CompletableFuture<Void> create(String rel, byte[] body, boolean overwrite) {
@@ -274,13 +295,24 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         String parent = parentRel(toRel);
         CompletableFuture<Void> ensureParent = parent == null
             ? CompletableFuture.completedFuture(null)
-            : mkdirs(parent);
-        return ensureParent.thenCompose(v -> {
-            URI uri = opUri(fromRel, "RENAME",
-                "destination", hdfsAbsPath(toRel),
-                "renameoptions", "OVERWRITE");
-            return send("PUT", uri, null).thenAccept(resp -> expectOk(resp, "RENAME " + fromRel, 200));
-        });
+            : ensureDir(parent);
+        return ensureParent.thenCompose(v -> renameTo(fromRel, toRel));
+    }
+
+    /** WebHDFS RENAME with OVERWRITE; the destination parent must already exist (see {@link #ensureDir}). */
+    private CompletableFuture<Void> renameTo(String fromRel, String toRel) {
+        URI uri = opUri(fromRel, "RENAME",
+            "destination", hdfsAbsPath(toRel),
+            "renameoptions", "OVERWRITE");
+        return send("PUT", uri, null).thenAccept(resp -> expectOk(resp, "RENAME " + fromRel, 200));
+    }
+
+    /** MKDIRS the directory once and cache it, so hot-path writes to the same dir skip the extra request. */
+    private CompletableFuture<Void> ensureDir(String rel) {
+        if (ensuredDirs.contains(rel)) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return mkdirs(rel).thenRun(() -> ensuredDirs.add(rel));
     }
 
     private CompletableFuture<Void> mkdirs(String rel) {

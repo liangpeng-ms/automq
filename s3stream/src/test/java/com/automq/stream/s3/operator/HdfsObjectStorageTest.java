@@ -124,6 +124,25 @@ public class HdfsObjectStorageTest {
     }
 
     @Test
+    public void writeIsAtomicObjectInvisibleUntilRename() throws Exception {
+        // Simulate a broker killed after the temp CREATE but before the atomic RENAME: the write fails and
+        // NO object must be visible under data/ (a torn object there would make WAL RecoverIterator throw).
+        emulator.failRename = true;
+        String key = "atomic/obj-300";
+        assertThrows(Exception.class,
+            () -> storage.write(new ObjectStorage.WriteOptions(), key, buf("payload")).get());
+        assertTrue(listKeys("").isEmpty(), "object must not be visible before RENAME completes");
+
+        // Once RENAME is allowed, the write publishes atomically and the object becomes visible.
+        emulator.failRename = false;
+        storage.write(new ObjectStorage.WriteOptions(), key, buf("payload")).get();
+        assertEquals(List.of(key), listKeys(""));
+        ByteBuf read = storage.rangeRead(readOpts(), key, 0, -1L).get();
+        assertEquals("payload", str(read));
+        read.release();
+    }
+
+    @Test
     public void listReturnsKeysUnderPrefix() throws Exception {
         storage.write(new ObjectStorage.WriteOptions(), "abc/def/100", buf("v1")).get();
         storage.write(new ObjectStorage.WriteOptions(), "abc/def/101", buf("v2")).get();
@@ -236,6 +255,8 @@ public class HdfsObjectStorageTest {
 
         volatile boolean sawOneShotCreate;
         volatile boolean sawMkdirsBeforeRename;
+        /** When set, RENAME fails (simulating a crash after the temp CREATE but before the atomic publish). */
+        volatile boolean failRename;
 
         void start() throws IOException {
             server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -346,6 +367,11 @@ public class HdfsObjectStorageTest {
 
         private void rename(HttpExchange exchange, String fromAbs, String destAbs) throws IOException {
             synchronized (lock) {
+                if (failRename) {
+                    respond(exchange, 400,
+                        "{\"RemoteException\":{\"exception\":\"IOException\",\"message\":\"injected rename failure\"}}");
+                    return;
+                }
                 String parent = parentOf(destAbs);
                 if (parent != null && !dirs.contains(parent)) {
                     respond(exchange, 404,
