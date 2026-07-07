@@ -153,6 +153,41 @@ public class HdfsObjectStorageTest {
     }
 
     @Test
+    public void bucketedLayoutFlattensKeysAndBoundsDirectories() throws Exception {
+        // Mimic AutoMQ's reversed-hex object keys (genKey): reversed(%08x id) / <namespace> / <id>. Under the S3
+        // layout each unique prefix would become its own HDFS directory (~1 inode per object) and exhaust the
+        // namespace quota. The HDFS backend must instead store one flat file per object under a bounded bucket dir.
+        List<String> keys = new ArrayList<>();
+        for (int id = 0; id < 64; id++) {
+            String key = new StringBuilder(String.format("%08x", id)).reverse() + "/_kafka_cid/" + id;
+            keys.add(key);
+            storage.write(new ObjectStorage.WriteOptions(), key, buf("v" + id)).get();
+        }
+
+        // Round-trip: every logical key is recovered exactly by list (filename decode reverses the flattening).
+        assertEquals(keys.stream().sorted().collect(Collectors.toList()), listKeys(""));
+
+        // Physical layout: every object is data/<bucket>/<flattened-file> -> exactly one dir level under data/,
+        // and the bucket is a 2-hex name, so the directory count is bounded (<= 256) regardless of object count.
+        java.util.Set<String> buckets = new java.util.HashSet<>();
+        for (String path : storageFilePathsUnderData()) {
+            String rel = path.substring(path.indexOf("/data/") + "/data/".length());
+            assertEquals(1, rel.chars().filter(c -> c == '/').count(),
+                "expected data/<bucket>/<file> (no per-object dirs), got " + rel);
+            String bucket = rel.substring(0, rel.indexOf('/'));
+            assertTrue(bucket.matches("[0-9a-f]{2}"), "bucket must be 2 hex chars, got " + bucket);
+            assertTrue(rel.substring(rel.indexOf('/') + 1).indexOf('/') < 0, "filename must be flat");
+            buckets.add(bucket);
+        }
+        assertTrue(buckets.size() <= 256, "bucket count must stay bounded, got " + buckets.size());
+    }
+
+    private List<String> storageFilePathsUnderData() {
+        return emulator.filePaths().stream()
+            .filter(p -> p.contains("/data/")).collect(Collectors.toList());
+    }
+
+    @Test
     public void multipartAssemblyCreatesDestinationParentBeforeRename() throws Exception {
         String key = "mpu/obj-200";
         ObjectStorage.WriteOptions wo = new ObjectStorage.WriteOptions();
@@ -270,6 +305,13 @@ public class HdfsObjectStorageTest {
 
         String endpoint() {
             return "http://127.0.0.1:" + server.getAddress().getPort() + MARKER + PATH_PREFIX;
+        }
+
+        /** Physical absolute paths of every stored object file (test-only introspection of the on-disk layout). */
+        java.util.List<String> filePaths() {
+            synchronized (lock) {
+                return new java.util.ArrayList<>(files.keySet());
+            }
         }
 
         private void handle(HttpExchange exchange) throws IOException {

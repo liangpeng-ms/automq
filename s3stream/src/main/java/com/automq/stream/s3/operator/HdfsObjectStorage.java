@@ -92,6 +92,8 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
     private static final String DATA_DIR = "data";
     private static final String MPU_DIR = "mpu";
     private static final String TMP_DIR = "tmp";
+    /** Separator that replaces '/' when a logical key is flattened into a single HDFS filename (see {@link #dataRel}). */
+    private static final char KEY_SEP = '~';
     /** Env var holding the Entra ID scope for the WebHDFS gateway API (e.g. {@code api://<app-id>/.default}). */
     private static final String TOKEN_SCOPE_ENV = "HDFS_TOKEN_SCOPE";
 
@@ -365,7 +367,8 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
                 if ("DIRECTORY".equals(node.path("type").asText())) {
                     chain = chain.thenCompose(v -> listRecursive(childRel, keyPrefix, out));
                 } else {
-                    String key = childRel.substring(DATA_DIR.length() + 1);
+                    // The filename is the whole flattened key (see dataRel); decode it back to the logical key.
+                    String key = decodeKey(suffix);
                     if (key.startsWith(keyPrefix)) {
                         out.add(new ObjectInfo(bucketId(), key,
                             node.path("modificationTime").asLong(), node.path("length").asLong()));
@@ -491,8 +494,31 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         return hdfsPathPrefix + "/" + rel;
     }
 
+    /**
+     * Maps a logical object key to its physical HDFS relative path using a bucketed, flattened layout:
+     * {@code data/<bucket>/<flattened-key>}. AutoMQ's key generator prefixes keys with a reversed-hex hash for S3
+     * anti-hotspotting; on S3 those prefixes are virtual, but on HDFS every prefix segment is a real NameNode
+     * directory inode, so the S3 layout would create ~1 directory per object and quickly exhaust the HDFS namespace
+     * quota. Here the whole key is flattened into a single filename under a bounded set of {@value #KEY_SEP}-free
+     * bucket directories, so the directory count stays constant regardless of object count. The logical key is
+     * unchanged; {@link #listRecursive} reverses the mapping by decoding the filename.
+     */
     private String dataRel(String key) {
-        return DATA_DIR + "/" + key;
+        return DATA_DIR + "/" + bucketOf(key) + "/" + encodeKey(key);
+    }
+
+    /** Bounded bucket (256) derived from the key hash, so the number of directories is independent of object count. */
+    private static String bucketOf(String key) {
+        return String.format("%02x", key.hashCode() & 0xFF);
+    }
+
+    /** Flatten a logical key into a single HDFS filename ('/' -&gt; {@link #KEY_SEP}); reversed by {@link #decodeKey}. */
+    private static String encodeKey(String key) {
+        return key.replace('/', KEY_SEP);
+    }
+
+    private static String decodeKey(String name) {
+        return name.replace(KEY_SEP, '/');
     }
 
     private String partRel(String uploadId, int partNumber) {
