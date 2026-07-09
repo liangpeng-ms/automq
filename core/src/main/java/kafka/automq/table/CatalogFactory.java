@@ -205,7 +205,19 @@ public class CatalogFactory {
             // automq.table.topic.catalog.credential=
             // automq.table.topic.catalog.token=
             // automq.table.topic.catalog.scope=
-            catalogImpl = "org.apache.iceberg.rest.RESTCatalog";
+            //
+            // When no OAuth2 credential is configured but a bearer token can be resolved (static token, Azure Workload
+            // Identity, or the AAD_TOKEN env), use WorkloadIdentityRESTCatalog so every request carries a fresh token
+            // (a long-lived catalog otherwise fails once an initially-configured static token expires). Set
+            // automq.table.topic.catalog.token.scope=<AAD scope> to enable Workload Identity auto-refresh.
+            boolean usesOAuth2Credential = catalogConfigs.containsKey("credential");
+            Map<String, String> tokenView = new HashMap<>();
+            catalogConfigs.forEach((k, v) -> tokenView.put(k, v == null ? null : v.toString()));
+            if (!usesOAuth2Credential && WorkloadIdentityRESTCatalog.canSupplyToken(tokenView)) {
+                catalogImpl = "kafka.automq.table.WorkloadIdentityRESTCatalog";
+            } else {
+                catalogImpl = "org.apache.iceberg.rest.RESTCatalog";
+            }
             putDataBucketAsWarehouse(false);
         }
 

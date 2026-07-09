@@ -1119,6 +1119,9 @@ project(':core') {
     testImplementation libs.slf4jReload4j
     testImplementation libs.caffeine
     testImplementation libs.commonMath3
+    // Expose Parquet's MessageType on the test compile classpath (iceberg-parquet pulls it in transitively at
+    // runtime only) so tests can drive the real Iceberg Parquet writer/reader, e.g. WebHdfsFileIOTest.
+    testImplementation 'org.apache.parquet:parquet-column:1.13.1'
     testRuntimeOnly libs.junitPlatformLanucher
   }
 
