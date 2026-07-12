@@ -76,7 +76,7 @@ public class WorkloadIdentityRESTCatalog extends RESTCatalog {
         return env != null && !env.isEmpty();
     }
 
-    static Supplier<String> tokenSupplier(Map<String, String> config) {
+    public static Supplier<String> tokenSupplier(Map<String, String> config) {
         String staticToken = config.get(TOKEN_PROP);
         if (staticToken != null && !staticToken.isEmpty()) {
             return () -> staticToken;
