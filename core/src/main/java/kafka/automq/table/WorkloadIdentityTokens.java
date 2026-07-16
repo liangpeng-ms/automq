@@ -25,8 +25,8 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 /**
- * Resolves an Entra ID (AAD) bearer token in a 3-tier order shared by the AutoMQ HDFS backend, the Iceberg REST
- * catalog auth, and the Schema Registry client:
+ * Resolves an Entra ID (AAD) bearer token in a 3-tier order shared by the AutoMQ HDFS backend and the Iceberg REST
+ * catalog auth ({@link WorkloadIdentityAuthManager}):
  * <ol>
  *   <li>static {@code token} property (dev/tests);</li>
  *   <li>Azure Workload Identity (auto-refreshing), scope from {@code token.scope} or env {@code HDFS_TOKEN_SCOPE};</li>
