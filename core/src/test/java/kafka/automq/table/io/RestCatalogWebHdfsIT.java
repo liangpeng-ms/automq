@@ -19,8 +19,6 @@
 
 package kafka.automq.table.io;
 
-import kafka.automq.table.WorkloadIdentityRESTCatalog;
-
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileFormat;
@@ -95,13 +93,15 @@ public class RestCatalogWebHdfsIT {
         props.put(CatalogProperties.FILE_IO_IMPL, "kafka.automq.table.io.WebHdfsFileIO");
         // UC requires the subcluster on every request; Iceberg sends header.* on all requests.
         props.put("header.subcluster", subcluster);
-        // No static "token": WorkloadIdentityRESTCatalog injects a fresh bearer per request (WI when available, else the
-        // AAD_TOKEN env). This validates the exact auth path that ships for in-cluster Workload Identity.
+        // No static "token": the WorkloadIdentityAuthManager (rest.auth.type) injects a fresh bearer per request (WI
+        // when available, else the AAD_TOKEN env). This validates the exact auth path that ships for in-cluster
+        // Workload Identity.
         // UC's DELETE/commit can be slow (purge deletes HDFS files); give the REST client generous timeouts.
         props.put("rest.client.connection-timeout-ms", "30000");
         props.put("rest.client.socket-timeout-ms", "120000");
+        props.put("rest.auth.type", "kafka.automq.table.WorkloadIdentityAuthManager");
 
-        catalog = new WorkloadIdentityRESTCatalog();
+        catalog = new RESTCatalog();
         catalog.initialize("uc", props);
         tableId = TableIdentifier.of(Namespace.of(namespace), "automq_webhdfs_it_" + UUID.randomUUID().toString().replace('-', '_'));
     }

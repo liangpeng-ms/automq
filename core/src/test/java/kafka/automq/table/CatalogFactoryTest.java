@@ -10,6 +10,9 @@ import com.sun.net.httpserver.HttpServer;
 import org.apache.iceberg.aws.s3.S3FileIOProperties;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
 import org.apache.iceberg.rest.RESTCatalog;
+import org.apache.iceberg.rest.RESTClient;
+import org.apache.iceberg.rest.auth.AuthManager;
+import org.apache.iceberg.rest.auth.AuthSession;
 import org.apache.iceberg.util.SerializableMap;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -56,6 +59,47 @@ class CatalogFactoryTest {
     }
 
     @Test
+    void restInjectsWorkloadIdentityAuthManagerWhenTokenResolvable() throws IOException {
+        try (final var restCatalog = new RestCatalogMock()) {
+            final var config = new KafkaConfig(merge(requiredKafkaConfigProperties, Map.of(
+                "automq.table.topic.catalog.type", "rest",
+                "automq.table.topic.catalog.uri", restCatalog.base(),
+                // a resolvable bearer token (static token here) must select AutoMQ's WI AuthManager via the SPI
+                "automq.table.topic.catalog.token", "my-static-token",
+                "s3.data.buckets", "0@s3://my_bucket?region=us-east-1"
+            )));
+            final var builder = new CatalogFactory.Builder(config);
+            try (final var closeable = assertInstanceOf(RESTCatalog.class, builder.build())) {
+                assertEquals(
+                    "kafka.automq.table.WorkloadIdentityAuthManager",
+                    builder.options.get("rest.auth.type"),
+                    "rest.auth.type must select the WorkloadIdentityAuthManager when a token is resolvable");
+            }
+        }
+    }
+
+    @Test
+    void restKeepsUserProvidedRestAuthType() throws IOException {
+        try (final var restCatalog = new RestCatalogMock()) {
+            final var config = new KafkaConfig(merge(requiredKafkaConfigProperties, Map.of(
+                "automq.table.topic.catalog.type", "rest",
+                "automq.table.topic.catalog.uri", restCatalog.base(),
+                "automq.table.topic.catalog.token", "my-static-token",
+                // user explicitly picked another AuthManager - do not override it with the WI AuthManager
+                "automq.table.topic.catalog.rest.auth.type", NoopAuthManager.class.getName(),
+                "s3.data.buckets", "0@s3://my_bucket?region=us-east-1"
+            )));
+            final var builder = new CatalogFactory.Builder(config);
+            try (final var closeable = assertInstanceOf(RESTCatalog.class, builder.build())) {
+                assertEquals(
+                    NoopAuthManager.class.getName(),
+                    builder.options.get("rest.auth.type"),
+                    "a user-provided rest.auth.type must be preserved, not overridden by the WI AuthManager");
+            }
+        }
+    }
+
+    @Test
     void ignoreEmptyS3EndpointForRestCatalog() throws IOException {
         FakeS3IO.lastS3FileIOProperties = null;
         try (final var restCatalog = new RestCatalogMock()) {
@@ -91,6 +135,25 @@ class CatalogFactoryTest {
         public void initialize(final Map<String, String> properties) {
             lastS3FileIOProperties = new S3FileIOProperties(SerializableMap.copyOf(properties));
             super.initialize(properties);
+        }
+    }
+
+    /**
+     * A minimal {@link AuthManager} that loads cleanly (no required config) so tests can assert a user-provided
+     * {@code rest.auth.type} is preserved rather than overridden by the WI AuthManager.
+     */
+    public static class NoopAuthManager implements AuthManager {
+        @SuppressWarnings("UnusedVariable")
+        public NoopAuthManager(String name) {
+        }
+
+        @Override
+        public AuthSession catalogSession(RESTClient sharedClient, Map<String, String> properties) {
+            return AuthSession.EMPTY;
+        }
+
+        @Override
+        public void close() {
         }
     }
 

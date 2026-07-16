@@ -19,8 +19,6 @@
 
 package kafka.automq.table.io;
 
-import kafka.automq.table.WorkloadIdentityRESTCatalog;
-
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.catalog.Namespace;
@@ -79,8 +77,9 @@ public class UcCreateTableIT {
         props.put("header.subcluster", subcluster);
         props.put("rest.client.connection-timeout-ms", "30000");
         props.put("rest.client.socket-timeout-ms", "120000");
+        props.put("rest.auth.type", "kafka.automq.table.WorkloadIdentityAuthManager");
 
-        RESTCatalog catalog = new WorkloadIdentityRESTCatalog();
+        RESTCatalog catalog = new RESTCatalog();
         catalog.initialize("uc", props);
         try {
             TableIdentifier id = TableIdentifier.of(Namespace.of(namespace), table);

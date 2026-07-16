@@ -19,7 +19,7 @@
 
 package kafka.automq.table.process.convert;
 
-import kafka.automq.table.WorkloadIdentityRESTCatalog;
+import kafka.automq.table.WorkloadIdentityTokens;
 import kafka.automq.table.deserializer.proto.LatestSchemaResolutionResolver;
 import kafka.automq.table.deserializer.proto.ProtobufSchemaProvider;
 import kafka.automq.table.process.ConversionResult;
@@ -130,13 +130,13 @@ public class ConverterFactory {
         Map<String, String> tokenConfig = new HashMap<>();
         String scope = configValue(configs, "bearer.auth.scope");
         if (scope != null && !scope.isEmpty()) {
-            tokenConfig.put(WorkloadIdentityRESTCatalog.TOKEN_SCOPE_PROP, scope);
+            tokenConfig.put(WorkloadIdentityTokens.TOKEN_SCOPE_PROP, scope);
         }
         String staticToken = configValue(configs, "bearer.auth.token");
         if (staticToken != null && !staticToken.isEmpty()) {
-            tokenConfig.put(WorkloadIdentityRESTCatalog.TOKEN_PROP, staticToken);
+            tokenConfig.put(WorkloadIdentityTokens.TOKEN_PROP, staticToken);
         }
-        return WorkloadIdentityRESTCatalog.tokenSupplier(tokenConfig);
+        return WorkloadIdentityTokens.tokenSupplier(tokenConfig);
     }
 
     /** Reads a config value by its bare key, honoring the optional Confluent client namespace ({@code schema.registry.}). */

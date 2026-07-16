@@ -33,7 +33,7 @@ import java.util.function.Supplier;
  * An Iceberg {@link AuthManager} that authenticates every REST request with a fresh Entra ID (AAD) bearer token, so a
  * long-lived catalog never fails once an initially-configured static token expires. Selected via
  * {@code rest.auth.type=kafka.automq.table.WorkloadIdentityAuthManager}. Replaces the pre-1.10
- * {@code WorkloadIdentityRESTCatalog} RESTClient-decorator hack (Iceberg 1.6.1 had no AuthManager SPI).
+ * RESTClient-decorator hack (Iceberg 1.6.1 had no AuthManager SPI).
  */
 public class WorkloadIdentityAuthManager implements AuthManager {
 
