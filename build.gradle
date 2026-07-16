@@ -135,13 +135,14 @@ allprojects {
     maven {
       url = uri("https://packages.confluent.io/maven/")
     }
-    // MT internal feed: iceberg-kafka-connect (FicRESTCatalog/DoAsFileIO/FicAuthManager) at 1.10.1-MT-*
+    // MT internal feed (production): iceberg-kafka-connect (FicRESTCatalog/DoAsFileIO/FicAuthManager)
+    // and schema-registry-tool. Auth: Entra ID access token as password (MS PAT disabled).
     maven {
-      url = uri("https://msasg.pkgs.visualstudio.com/b9b38275-a912-4222-a7b7-0b8b968719c0/_packaging/MtNugetTest3/maven/v1")
-      name = "MtNugetTest3"
+      url = uri("https://msasg.pkgs.visualstudio.com/b9b38275-a912-4222-a7b7-0b8b968719c0/_packaging/MagneTar-Publish/maven/v1")
+      name = "MagnetarPublish"
       credentials {
-        username = project.findProperty("MultiTenancy-Test3Username") ?: "azure"
-        password = project.findProperty("MultiTenancy-Test3Password") ?: ""
+        username = project.findProperty("MagnetarPublishUsername") ?: "azure"
+        password = project.findProperty("MagnetarPublishPassword") ?: ""
       }
       authentication {
         basic(BasicAuthentication)
@@ -1040,8 +1041,13 @@ project(':core') {
     implementation ("org.apache.iceberg:iceberg-common:${versions.iceberg}")
     implementation ("org.apache.iceberg:iceberg-aws:${versions.iceberg}")
     implementation ("org.apache.iceberg:iceberg-nessie:${versions.iceberg}")
-    // MT internal: FicRESTCatalog + DoAsFileIO + FicAuthManager (Unity Catalog + HDFS AAD/FIC auth)
-    implementation ("org.apache.iceberg:iceberg-kafka-connect:1.10.1-MT-20260609-2")
+    // MT internal: FicRESTCatalog + DoAsFileIO + FicAuthManager (Unity Catalog + HDFS AAD/FIC auth).
+    // The MT Gradle module metadata pins transitive iceberg-kafka-connect-events to the MT version,
+    // which is not published (only public 1.10.1 exists); exclude it and add the public one explicitly.
+    implementation ("org.apache.iceberg:iceberg-kafka-connect:1.10.1-MT-20260609-2") {
+      exclude group: 'org.apache.iceberg', module: 'iceberg-kafka-connect-events'
+    }
+    implementation ("org.apache.iceberg:iceberg-kafka-connect-events:${versions.iceberg}")
     implementation ("software.amazon.awssdk:glue:${versions.awsSdk}")
     implementation ("software.amazon.awssdk:s3tables:${versions.awsSdk}")
     implementation 'software.amazon.s3tables:s3-tables-catalog-for-iceberg:0.1.8'
