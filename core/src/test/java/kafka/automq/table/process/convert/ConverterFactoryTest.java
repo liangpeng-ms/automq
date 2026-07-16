@@ -26,10 +26,8 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -68,25 +66,6 @@ class ConverterFactoryTest {
         configs.put("schema.registry.request.header.", "no-name");
 
         assertNull(ConverterFactory.extractHttpHeaders(configs));
-    }
-
-    @Test
-    void workloadIdentityTokenSupplierNullWhenSourceIsNotWorkloadIdentity() {
-        assertNull(ConverterFactory.workloadIdentityTokenSupplier(Map.of()));
-        assertNull(ConverterFactory.workloadIdentityTokenSupplier(Map.of(
-            "bearer.auth.credentials.source", "STATIC_TOKEN")));
-    }
-
-    @Test
-    void workloadIdentityTokenSupplierUsesStaticTokenTierAndNamespacedKeys() {
-        Map<String, Object> configs = new HashMap<>();
-        configs.put("schema.registry.bearer.auth.credentials.source", "workload_identity");
-        configs.put("schema.registry.bearer.auth.token", "static-abc");
-
-        Supplier<String> supplier = ConverterFactory.workloadIdentityTokenSupplier(configs);
-
-        assertNotNull(supplier);
-        assertEquals("static-abc", supplier.get());
     }
 
     @Test

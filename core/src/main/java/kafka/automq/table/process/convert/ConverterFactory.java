@@ -19,7 +19,6 @@
 
 package kafka.automq.table.process.convert;
 
-import kafka.automq.table.WorkloadIdentityTokens;
 import kafka.automq.table.deserializer.proto.LatestSchemaResolutionResolver;
 import kafka.automq.table.deserializer.proto.ProtobufSchemaProvider;
 import kafka.automq.table.process.ConversionResult;
@@ -39,7 +38,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.URL;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.HashMap;
@@ -47,7 +45,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Supplier;
 
 import io.confluent.kafka.schemaregistry.ParsedSchema;
 import io.confluent.kafka.schemaregistry.avro.AvroSchemaProvider;
@@ -55,7 +52,6 @@ import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.rest.RestService;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
-import io.confluent.kafka.schemaregistry.client.security.bearerauth.BearerAuthCredentialProvider;
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 
 public class ConverterFactory {
@@ -63,8 +59,6 @@ public class ConverterFactory {
 
     private static final String VALUE_SUFFIX = "-value";
     private static final String PROTOBUF_TYPE = "PROTOBUF";
-    // bearer.auth.credentials.source value that selects AutoMQ's built-in Workload Identity bearer provider.
-    static final String WORKLOAD_IDENTITY_SOURCE = "WORKLOAD_IDENTITY";
     // Confluent wire framing: magic byte (0x0) + 4-byte big-endian schema id.
     private static final byte MAGIC_BYTE = 0x0;
     private static final int SCHEMA_ID_HEADER_SIZE = 5;
@@ -88,72 +82,20 @@ public class ConverterFactory {
         if (registryUrl != null && !registryUrl.trim().isEmpty()) {
             Map<String, ?> configs = Objects.requireNonNullElse(schemaRegistryClientConfigs, Map.of());
             RestService restService = new RestService(registryUrl);
-            // AutoMQ built-in Workload Identity auth: when bearer.auth.credentials.source=WORKLOAD_IDENTITY, attach our
-            // own per-request refreshing bearer provider (reusing the HDFS/catalog token supplier: static token >
-            // Azure Workload Identity auto-refresh > AAD_TOKEN env) instead of an external Confluent SPI provider/jar.
-            // The source key is stripped before configure(...) so Confluent's factory does not try to resolve it.
-            Supplier<String> wiToken = workloadIdentityTokenSupplier(configs);
-            Map<String, ?> restConfigs = configs;
-            if (wiToken != null) {
-                restService.setBearerAuthCredentialProvider(new SupplierBearerAuthCredentialProvider(wiToken));
-                restConfigs = withoutBearerSource(configs);
-            }
             // Custom static headers (e.g. a gateway 'subcluster' routing header) must be injected via the httpHeaders
             // constructor parameter: RestService.configure(...) ignores request.header.* and only sends headers set
-            // through setHttpHeaders(...).
+            // through setHttpHeaders(...). Bearer auth (including Workload Identity) is resolved by the Confluent client
+            // through the BearerAuthCredentialProvider SPI (schema-registry-tool jar) via bearer.auth.credentials.source.
             this.client = new CachedSchemaRegistryClient(
                 restService,
                 AbstractKafkaSchemaSerDeConfig.MAX_SCHEMAS_PER_SUBJECT_DEFAULT,
                 List.of(new AvroSchemaProvider(), new ProtobufSchemaProvider()),
-                restConfigs,
+                configs,
                 extractHttpHeaders(configs)
             );
         } else {
             this.client = null;
         }
-    }
-
-    /**
-     * Builds an AutoMQ Workload Identity bearer-token supplier when {@code bearer.auth.credentials.source=WORKLOAD_IDENTITY},
-     * reusing the same 3-tier token resolution as the REST catalog (static {@code bearer.auth.token} > Azure Workload
-     * Identity auto-refresh > {@code AAD_TOKEN} env). The scope comes from {@code bearer.auth.scope} or env
-     * {@code HDFS_TOKEN_SCOPE}. Returns {@code null} when a different (or no) bearer source is configured, leaving the
-     * stock Confluent auth path untouched. Keys may carry the {@code schema.registry.} client namespace prefix.
-     *
-     * @return a token supplier, or {@code null} when WORKLOAD_IDENTITY is not the configured source
-     */
-    static Supplier<String> workloadIdentityTokenSupplier(Map<String, ?> configs) {
-        String source = configValue(configs, "bearer.auth.credentials.source");
-        if (source == null || !WORKLOAD_IDENTITY_SOURCE.equalsIgnoreCase(source.trim())) {
-            return null;
-        }
-        Map<String, String> tokenConfig = new HashMap<>();
-        String scope = configValue(configs, "bearer.auth.scope");
-        if (scope != null && !scope.isEmpty()) {
-            tokenConfig.put(WorkloadIdentityTokens.TOKEN_SCOPE_PROP, scope);
-        }
-        String staticToken = configValue(configs, "bearer.auth.token");
-        if (staticToken != null && !staticToken.isEmpty()) {
-            tokenConfig.put(WorkloadIdentityTokens.TOKEN_PROP, staticToken);
-        }
-        return WorkloadIdentityTokens.tokenSupplier(tokenConfig);
-    }
-
-    /** Reads a config value by its bare key, honoring the optional Confluent client namespace ({@code schema.registry.}). */
-    private static String configValue(Map<String, ?> configs, String bareKey) {
-        Object v = configs.get(bareKey);
-        if (v == null) {
-            v = configs.get("schema.registry." + bareKey);
-        }
-        return v == null ? null : String.valueOf(v);
-    }
-
-    /** Returns a copy of the configs without {@code bearer.auth.credentials.source} (bare and namespaced forms). */
-    private static Map<String, ?> withoutBearerSource(Map<String, ?> configs) {
-        Map<String, Object> copy = new HashMap<>(configs);
-        copy.remove("bearer.auth.credentials.source");
-        copy.remove("schema.registry.bearer.auth.credentials.source");
-        return copy;
     }
 
     /**
@@ -304,29 +246,6 @@ public class ConverterFactory {
             default:
                 LOGGER.error("Unsupported schema format '{}'", format);
                 throw new ProcessorInitializationException("Unsupported schema format: " + format);
-        }
-    }
-
-    /**
-     * Minimal {@link BearerAuthCredentialProvider} that returns a fresh token from a supplier on every request
-     * (Confluent's {@code RestService} adds the {@code "Bearer "} prefix itself). This plugs AutoMQ's Workload Identity
-     * token into the Schema Registry client without any SPI registration or external jar.
-     */
-    static final class SupplierBearerAuthCredentialProvider implements BearerAuthCredentialProvider {
-        private final Supplier<String> tokenSupplier;
-
-        SupplierBearerAuthCredentialProvider(Supplier<String> tokenSupplier) {
-            this.tokenSupplier = tokenSupplier;
-        }
-
-        @Override
-        public void configure(Map<String, ?> configs) {
-            // No external configuration needed; the token supplier is provided at construction time.
-        }
-
-        @Override
-        public String getBearerToken(URL url) {
-            return tokenSupplier.get();
         }
     }
 
