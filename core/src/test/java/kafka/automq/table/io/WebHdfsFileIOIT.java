@@ -136,7 +136,7 @@ public class WebHdfsFileIOIT {
         OutputFile out = io.newOutputFile(loc);
         try (FileAppender<Record> appender = Parquet.write(out)
             .schema(schema)
-            .createWriterFunc(GenericParquetWriter::buildWriter)
+            .createWriterFunc(msgType -> GenericParquetWriter.create(schema, msgType))
             .overwrite()
             .build()) {
             appender.addAll(expected);
