@@ -1048,6 +1048,9 @@ project(':core') {
       exclude group: 'org.apache.iceberg', module: 'iceberg-kafka-connect-events'
     }
     implementation ("org.apache.iceberg:iceberg-kafka-connect-events:${versions.iceberg}")
+    // MT internal: official Confluent BearerAuthCredentialProvider SPI impls (WORKLOAD_IDENTITY etc.)
+    // for Schema Registry bearer auth (com.microsoft.magnetar.schema.registry.tool.*).
+    implementation ("com.microsoft.magnetar.kafka:schema-registry-tool:1.0.3")
     implementation ("software.amazon.awssdk:glue:${versions.awsSdk}")
     implementation ("software.amazon.awssdk:s3tables:${versions.awsSdk}")
     implementation 'software.amazon.s3tables:s3-tables-catalog-for-iceberg:0.1.8'
