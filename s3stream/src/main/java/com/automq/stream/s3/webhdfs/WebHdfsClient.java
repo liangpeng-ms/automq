@@ -17,9 +17,8 @@
  * limitations under the License.
  */
 
-package kafka.automq.table.io;
+package com.automq.stream.s3.webhdfs;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -29,7 +28,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Locale;
@@ -39,7 +37,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Minimal, self-contained WebHDFS REST client used by {@link WebHdfsFileIO}. It intentionally avoids any Hadoop
+ * Minimal, self-contained WebHDFS REST client used by {@code WebHdfsFileIO}. It intentionally avoids any Hadoop
  * dependency: all HDFS access goes through the WebHDFS HTTP gateway using the JDK {@link HttpClient} and an Entra ID
  * (AAD) bearer token, mirroring the proven request shapes used by the AutoMQ WAL/object-storage HDFS backend
  * (one-shot {@code data=true} CREATE, ranged OPEN, GETFILESTATUS, MKDIRS, DELETE).
@@ -52,7 +50,7 @@ import java.util.regex.Pattern;
  * explicit {@code gatewayBase} override can be supplied (used by the unit-test emulator); every location is then
  * rewritten to {@code base + absPath} — only the absolute path is used.
  */
-final class WebHdfsClient {
+public final class WebHdfsClient {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_REDIRECTS = 3;
     /** RPC NameNode host label: {@code namenode<index>[extra<n>]}. */
@@ -64,11 +62,11 @@ final class WebHdfsClient {
     /** Optional WebHDFS gateway base including {@code /webhdfs/v1[/mount]}, without a trailing slash; null = derive from the hdfs:// authority. */
     private final String gatewayBase;
 
-    WebHdfsClient(Supplier<String> token, Duration timeout) {
+    public WebHdfsClient(Supplier<String> token, Duration timeout) {
         this(token, timeout, null);
     }
 
-    WebHdfsClient(Supplier<String> token, Duration timeout, String gatewayBase) {
+    public WebHdfsClient(Supplier<String> token, Duration timeout, String gatewayBase) {
         this.token = token;
         this.timeout = timeout;
         this.gatewayBase = normalizeGateway(gatewayBase);
@@ -93,7 +91,7 @@ final class WebHdfsClient {
      * Translate an Iceberg location into the WebHDFS REST base URL: {@code gatewayBase + absPath}, where the gateway is
      * the explicit override if configured, otherwise derived from the location's {@code hdfs://} authority.
      */
-    String restUrl(String location) {
+    public String restUrl(String location) {
         URI u = URI.create(location);
         String path = u.getRawPath() == null ? "" : u.getRawPath();
         String base = gatewayBase != null ? gatewayBase : deriveGateway(u.getAuthority());
@@ -105,7 +103,7 @@ final class WebHdfsClient {
      * convention: authority {@code namenode<X>[extra<Y>]-vipv4.MTPrime-PROD-<CLUSTER>.<CLUSTER>.ap.gbl} maps to
      * {@code https://hdfs-http-ipv4-mtprime-<cluster>-<X>.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-<CLUSTER>-<X>[-Extra-<Y>]}.
      */
-    static String deriveGateway(String authority) {
+    public static String deriveGateway(String authority) {
         if (authority == null || authority.isEmpty()) {
             throw new IllegalArgumentException("hdfs location has no authority; cannot derive WebHDFS gateway");
         }
@@ -131,7 +129,7 @@ final class WebHdfsClient {
         return idx <= 0 ? location : location.substring(0, idx);
     }
 
-    long getLength(String location) {
+    public long getLength(String location) {
         HttpResponse<byte[]> resp = send("GET", op(location, "GETFILESTATUS"), null, null);
         if (resp.statusCode() == 404) {
             throw new UncheckedIOException(new IOException("Not found: " + location));
@@ -144,7 +142,7 @@ final class WebHdfsClient {
         }
     }
 
-    boolean exists(String location) {
+    public boolean exists(String location) {
         HttpResponse<byte[]> resp = send("GET", op(location, "GETFILESTATUS"), null, null);
         if (resp.statusCode() == 200) {
             return true;
@@ -152,17 +150,17 @@ final class WebHdfsClient {
         if (resp.statusCode() == 404) {
             return false;
         }
-        throw error("GETFILESTATUS", resp);
+        throw new UncheckedIOException(new IOException(WebHdfsProtocol.errorMessage("GETFILESTATUS", resp.statusCode(), resp.body())));
     }
 
     /** Open a streaming read starting at {@code offset} to end of file. Follows a DataNode redirect if returned. */
-    InputStream open(String location, long offset) {
+    public InputStream open(String location, long offset) {
         URI uri = op(location, "OPEN", "offset", Long.toString(offset));
         HttpResponse<InputStream> resp = sendStream("GET", uri);
         if (resp.statusCode() == 404) {
             throw new UncheckedIOException(new IOException("Not found: " + location));
         }
-        if (isRedirect(resp.statusCode())) {
+        if (WebHdfsProtocol.isRedirect(resp.statusCode())) {
             String loc = resp.headers().firstValue("Location").orElseThrow();
             drain(resp.body());
             resp = sendStream("GET", URI.create(loc));
@@ -180,11 +178,11 @@ final class WebHdfsClient {
      * only becomes visible once referenced by a committed snapshot, so a torn/orphan file is never read (Iceberg's
      * orphan-file cleanup removes it later). Skipping temp+RENAME also avoids an extra NameNode metadata op.
      */
-    void create(String location, Path localBody, boolean overwrite) {
+    public void create(String location, Path localBody, boolean overwrite) {
         mkdirs(parentLocation(location));
         URI uri = op(location, "CREATE", "overwrite", Boolean.toString(overwrite), "data", "true");
         HttpResponse<byte[]> resp = sendBody("PUT", uri, bodyOf(localBody), "application/octet-stream");
-        String redirect = writeRedirect(resp);
+        String redirect = WebHdfsProtocol.writeRedirectLocation(resp);
         if (redirect != null) {
             resp = sendBody("PUT", URI.create(redirect), bodyOf(localBody), "application/octet-stream");
         }
@@ -199,15 +197,15 @@ final class WebHdfsClient {
         }
     }
 
-    void mkdirs(String location) {
+    public void mkdirs(String location) {
         HttpResponse<byte[]> resp = send("PUT", op(location, "MKDIRS"), null, null);
         expect(resp, "MKDIRS " + location, 200);
     }
 
-    void delete(String location) {
+    public void delete(String location) {
         HttpResponse<byte[]> resp = send("DELETE", op(location, "DELETE", "recursive", "false"), null, null);
         if (resp.statusCode() != 200 && resp.statusCode() != 404) {
-            throw error("DELETE " + location, resp);
+            throw new UncheckedIOException(new IOException(WebHdfsProtocol.errorMessage("DELETE " + location, resp.statusCode(), resp.body())));
         }
     }
 
@@ -215,9 +213,7 @@ final class WebHdfsClient {
 
     private URI op(String location, String op, String... params) {
         StringBuilder sb = new StringBuilder(restUrl(location)).append("?op=").append(op);
-        for (int i = 0; i + 1 < params.length; i += 2) {
-            sb.append('&').append(params[i]).append('=').append(params[i + 1]);
-        }
+        WebHdfsProtocol.appendParams(sb, params);
         return URI.create(sb.toString());
     }
 
@@ -234,7 +230,7 @@ final class WebHdfsClient {
         b.method(method, reqBody == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofByteArray(reqBody));
         try {
             HttpResponse<byte[]> resp = http.send(b.build(), HttpResponse.BodyHandlers.ofByteArray());
-            if (isRedirect(resp.statusCode()) && redirects < MAX_REDIRECTS) {
+            if (WebHdfsProtocol.isRedirect(resp.statusCode()) && redirects < MAX_REDIRECTS) {
                 Optional<String> loc = resp.headers().firstValue("Location");
                 if (loc.isPresent()) {
                     return send(method, URI.create(loc.get()), reqBody, contentType, redirects + 1);
@@ -280,39 +276,13 @@ final class WebHdfsClient {
         }
     }
 
-    private static boolean isRedirect(int sc) {
-        return sc == 307 || sc == 308 || sc == 301 || sc == 302 || sc == 303;
-    }
-
-    private static String writeRedirect(HttpResponse<byte[]> resp) {
-        if (isRedirect(resp.statusCode())) {
-            return resp.headers().firstValue("Location").orElse(null);
-        }
-        if (resp.statusCode() == 200 && resp.body() != null && resp.body().length > 0) {
-            try {
-                JsonNode loc = JSON.readTree(resp.body()).path("Location");
-                if (!loc.isMissingNode() && !loc.asText().isEmpty()) {
-                    return loc.asText();
-                }
-            } catch (IOException ignored) {
-                // fall through
-            }
-        }
-        return null;
-    }
-
     private static void expect(HttpResponse<byte[]> resp, String op, int... okCodes) {
         for (int ok : okCodes) {
             if (resp.statusCode() == ok) {
                 return;
             }
         }
-        throw error(op, resp);
-    }
-
-    private static UncheckedIOException error(String op, HttpResponse<byte[]> resp) {
-        String body = resp.body() == null ? "" : new String(resp.body(), StandardCharsets.UTF_8);
-        return new UncheckedIOException(new IOException(String.format("WebHDFS %s failed, status=%d, body=%s", op, resp.statusCode(), body)));
+        throw new UncheckedIOException(new IOException(WebHdfsProtocol.errorMessage(op, resp.statusCode(), resp.body())));
     }
 
     private static void drain(InputStream in) {

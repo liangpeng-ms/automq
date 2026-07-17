@@ -19,6 +19,8 @@
 
 package kafka.automq.table.io;
 
+import com.automq.stream.s3.webhdfs.WebHdfsClient;
+
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
