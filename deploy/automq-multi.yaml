@@ -1,0 +1,213 @@
+# AutoMQ MULTI-NODE (combined) perf-test deployment for MT / Falcon.
+#
+# Derived from automq-single-rongyu.yaml. Topology: 3x process.roles=server
+# (each pod is BOTH broker AND controller). WAL/data/ops HDFS endpoints are
+# SHARED across all pods -- isolation is automatic via the node.id-based WAL
+# key prefix ({md5(nodeId)}/_kafka_{clusterId}/{nodeId}/{epoch}/wal/...), so
+# every pod keeps the same endpoints and only needs a UNIQUE node.id.
+#
+# Changes vs single-node:
+#   replicas 1 -> 3
+#   podManagementPolicy: Parallel  (REQUIRED: combined KRaft needs all 3
+#     controllers online at once to form quorum; the default OrderedReady
+#     waits for pod-0 Ready before starting pod-1 -> quorum never forms ->
+#     deadlock. Parallel starts all pods simultaneously.)
+#   controller.quorum.voters: was "$NODE_ID@$IP:9093" (single-node artifact,
+#     each pod pointed only at itself) -> fixed list of all 3 pods' stable
+#     StatefulSet DNS names, identical on every pod.
+#   Keeps the single-node name automq-broker-pelian -- this REPLACES the
+#     single-node deployment in place (do not run both under this name).
+#   livenessProbe initialDelaySeconds 60 -> 120 (multi-node quorum formation
+#     is slower than single-node; avoid killing pods mid-bootstrap).
+apiVersion: apis.clusterfleet.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+  labels:
+    microsoft-falcon.net/workload-state: stateful
+  name: automq-broker-pelian
+  namespace: magnetar-test
+spec:
+  priorityClassName: prod
+  rollbackStrategy:
+    minReadyReplicas: 0
+    minReadySeconds: 0
+    progressDeadlineSeconds: 0
+    revisionHistoryLimit: 5
+  rolloutStrategy:
+    minAvailableReplicas: 100%
+  version: '20260624.2'
+  workload:
+    - manifest:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: automq-broker-pelian
+          namespace: magnetar-test
+        spec:
+          clusterIP: None
+          ports:
+            - name: kafka
+              port: 9092
+              protocol: TCP
+              targetPort: kafka
+            - name: metrics
+              port: 9090
+              protocol: TCP
+              targetPort: metrics
+          publishNotReadyAddresses: true
+          selector:
+            app.kubernetes.io/component: service
+            app.kubernetes.io/instance: magnetar-test.automq-broker-pelian
+          type: ClusterIP
+    - manifest:
+        apiVersion: apps/v1
+        kind: StatefulSet
+        metadata:
+          labels:
+            app.kubernetes.io/component: service
+            app.kubernetes.io/instance: magnetar-test.automq-broker-pelian
+          name: automq-broker-pelian
+          namespace: magnetar-test
+        spec:
+          replicas: 3
+          podManagementPolicy: Parallel
+          selector:
+            matchLabels:
+              app.kubernetes.io/component: service
+              app.kubernetes.io/instance: magnetar-test.automq-broker-pelian
+          serviceName: automq-broker-pelian
+          template:
+            metadata:
+              annotations:
+                prometheus.io/path: /metrics
+                prometheus.io/port: '9090'
+                prometheus.io/scrape: 'true'
+              labels:
+                app.kubernetes.io/component: service
+                app.kubernetes.io/instance: magnetar-test.automq-broker-pelian
+                azure.workload.identity/use: 'true'
+            spec:
+              serviceAccountName: falconfleet-magnetar-test-sa
+              containers:
+                - command:
+                    - bash
+                    - '-c'
+                    - >
+                      set -euo pipefail
+
+                      ORD="${HOSTNAME##*-}"
+
+                      NODE_ID="$((100000 + ORD))"
+
+                      IP="$(hostname -I | awk '{print $1}')"
+
+
+                      # Fixed controller quorum: all 3 pods, addressed by their
+                      stable StatefulSet DNS names (resolvable even before Ready
+                      because the headless Service sets publishNotReadyAddresses).
+                      Node ids 100000/100001/100002 map to pod ordinals 0/1/2,
+                      matching NODE_ID above. This list is IDENTICAL on every pod.
+
+                      SVC="automq-broker-pelian"
+
+                      VOTERS="100000@${SVC}-0.${SVC}.${POD_NAMESPACE}.svc.cluster.local:9093,100001@${SVC}-1.${SVC}.${POD_NAMESPACE}.svc.cluster.local:9093,100002@${SVC}-2.${SVC}.${POD_NAMESPACE}.svc.cluster.local:9093"
+
+
+                      # start.sh 'up' auto-formats and sets listeners/advertised
+                      from the pod IP. Table Topic catalog config is appended to
+                      server.properties because start.sh 'up' only parses a fixed
+                      set of --flags (unknown --flags would loop forever).
+
+                      printf '%s\n' 'automq.table.topic.catalog.type=rest' 'automq.table.topic.catalog.uri=https://api.magnetar.binginternal.com/unity-catalog/api/2.1/unity-catalog/iceberg' 'automq.table.topic.catalog.warehouse=test_catalog1' 'automq.table.topic.catalog.io-impl=kafka.automq.table.io.WebHdfsFileIO' 'automq.table.topic.catalog.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.url=https://api.magnetar.binginternal.com/schema-registry' 'automq.table.topic.schema.registry.config.bearer.auth.credentials.source=WORKLOAD_IDENTITY' 'automq.table.topic.schema.registry.config.request.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.config.auto.register.schemas=false' >> /opt/automq/kafka/config/kraft/server.properties
+
+                      exec /opt/automq/scripts/start.sh up
+                      --process.roles server
+                      --node.id "$NODE_ID"
+                      --controller.quorum.voters "$VOTERS"
+                      --cluster.id OB_fAKFJOMYdbIqpoJ6eSQ
+                      --s3.bucket dummy
+                      --s3.endpoint http://dummy
+                      --s3.region us-east-1
+                  env:
+                    - name: KAFKA_CFG_S3_DATA_BUCKETS
+                      value: >-
+                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/data
+                    - name: KAFKA_CFG_S3_OPS_BUCKETS
+                      value: >-
+                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/data
+                    - name: KAFKA_CFG_S3_WAL_PATH
+                      value: >-
+                        -3@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/wal
+                    - name: HDFS_TOKEN_SCOPE
+                      value: api://1c0b8c88-563f-4b97-abdf-207172a50d2c/.default
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+                    - name: KAFKA_CFG_LOG_DIRS
+                      value: /tmp/kraft-server-logs
+                    - name: KAFKA_CFG_ELASTICSTREAM_ENABLE
+                      value: 'true'
+                    - name: KAFKA_CFG_S3_STREAM_ALLOCATOR_POLICY
+                      value: POOLED_DIRECT
+                    - name: KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR
+                      value: '3'
+                    - name: KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+                      value: '3'
+                    - name: KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR
+                      value: '2'
+                    - name: KAFKA_CFG_S3_TELEMETRY_METRICS_EXPORTER_URI
+                      value: prometheus://?host=0.0.0.0&port=9090
+                    - name: KAFKA_HEAP_OPTS
+                      value: >-
+                        -Xms4g -Xmx4g -XX:MetaspaceSize=96m
+                        -XX:MaxDirectMemorySize=6G
+                    - name: POD__ID
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                  image: msbingmtcr.azurecr.io/rongyu/automq:test0712sr
+                  imagePullPolicy: Always
+                  livenessProbe:
+                    failureThreshold: 12
+                    initialDelaySeconds: 120
+                    periodSeconds: 20
+                    tcpSocket:
+                      port: kafka
+                    timeoutSeconds: 10
+                  name: automq-broker-pelian
+                  ports:
+                    - containerPort: 9092
+                      name: kafka
+                      protocol: TCP
+                    - containerPort: 9090
+                      name: metrics
+                      protocol: TCP
+                  readinessProbe:
+                    failureThreshold: 6
+                    initialDelaySeconds: 20
+                    periodSeconds: 15
+                    tcpSocket:
+                      port: kafka
+                    timeoutSeconds: 5
+                  resources:
+                    limits:
+                      cpu: 4000m
+                      memory: 12G
+                    requests:
+                      cpu: 4000m
+                      memory: 12G
+              nodeSelector:
+                kubernetes.azure.com/mode: user
+                kubernetes.io/os: linux
+                microsoft-falcon.net/ap-connectivity: ipv4regional
+                microsoft-falcon.net/cloud: azure
+                microsoft-falcon.net/cross-region-connectivity: regional
+                microsoft-falcon.net/use-case: generic
+                scheduler.clusterfleet.io/ready: 'true'
+              priorityClassName: prod
