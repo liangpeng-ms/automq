@@ -22,28 +22,26 @@ package com.automq.stream.s3.operator;
 import com.automq.stream.s3.exceptions.ObjectNotExistException;
 import com.automq.stream.s3.metrics.operations.S3Operation;
 import com.automq.stream.s3.network.NetworkBandwidthLimiter;
+import com.automq.stream.s3.webhdfs.AsyncWebHdfsClient;
+import com.automq.stream.s3.webhdfs.WebHdfsException;
+import com.automq.stream.s3.webhdfs.WebHdfsProtocol;
 import com.automq.stream.utils.FutureUtil;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -69,6 +67,11 @@ import io.netty.buffer.Unpooled;
  *     <li>delete          -&gt; {@code op=DELETE}</li>
  *     <li>readiness       -&gt; {@code op=GETFILESTATUS}</li>
  * </ul>
+ * The low-level WebHDFS REST exchanges (redirect handling, the two-phase write handshake, per-op error mapping) live in
+ * {@link AsyncWebHdfsClient}; this class keeps the orchestration on top of them: the atomic temp-CREATE + RENAME publish,
+ * multipart assembly, the bucketed/flattened key layout, the recursive-list tree walk, the ensured-directory cache and
+ * the retry classification.
+ * <p>
  * URL format: {@code <endpoint>/data/<key>?op=<OP>}, where {@code endpoint} is the full WebHDFS base URL
  * (including {@code /webhdfs/v1/<subcluster>} and any directory) following the HDFS HTTP v2 spec.
  * <p>
@@ -87,24 +90,15 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
     private static final ObjectMapper JSON = new ObjectMapper();
     public static final short BUCKET_ID = -3;
 
-    private static final int MAX_REDIRECTS = 3;
     private static final String WEBHDFS_MARKER = "/webhdfs/v1";
     private static final String DATA_DIR = "data";
     private static final String MPU_DIR = "mpu";
     private static final String TMP_DIR = "tmp";
     /** Separator that replaces '/' when a logical key is flattened into a single HDFS filename (see {@link #dataRel}). */
     private static final char KEY_SEP = '~';
-    /** Env var holding the Entra ID scope for the WebHDFS gateway API (e.g. {@code api://<app-id>/.default}). */
-    private static final String TOKEN_SCOPE_ENV = "HDFS_TOKEN_SCOPE";
 
-    private final HttpClient httpClient;
-    /** Full WebHDFS REST base, e.g. {@code https://<gateway-host>:<port>/webhdfs/v1/<subcluster>/automq}. */
-    private final String restBase;
-    /** HDFS absolute path prefix (part after {@code /webhdfs/v1}), used for RENAME destination. */
-    private final String hdfsPathPrefix;
-    private final Duration requestTimeout;
-    /** Supplies the current Entra ID bearer token; must be refreshable in production. */
-    private final Supplier<String> tokenSupplier;
+    /** Low-level WebHDFS REST client owning the {@code HttpClient}, token supplier and atomic op implementations. */
+    private final AsyncWebHdfsClient client;
     /** Directories already MKDIRS'd, so repeated hot-path writes to the same dir skip a redundant MKDIRS. */
     private final Set<String> ensuredDirs = ConcurrentHashMap.newKeySet();
 
@@ -114,20 +108,15 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         super(bucketURI, inboundLimiter, outboundLimiter, readWriteIsolate, checkMode, threadPrefix);
         // endpoint is the full WebHDFS base URL, e.g.
         // https://<gateway-host>:<port>/webhdfs/v1/<subcluster>/<dir>/automq
-        this.restBase = trimTrailingSlash(bucketURI.endpoint());
+        String restBase = trimTrailingSlash(bucketURI.endpoint());
         String path = URI.create(restBase).getRawPath();
         int markerIdx = path.indexOf(WEBHDFS_MARKER);
         // HDFS absolute path prefix (part after /webhdfs/v1), used for RENAME destination.
-        this.hdfsPathPrefix = markerIdx >= 0 ? path.substring(markerIdx + WEBHDFS_MARKER.length()) : path;
-        this.requestTimeout = Duration.ofMillis(
+        String hdfsPathPrefix = markerIdx >= 0 ? path.substring(markerIdx + WEBHDFS_MARKER.length()) : path;
+        Duration requestTimeout = Duration.ofMillis(
             Long.parseLong(bucketURI.extensionString(BucketURI.API_CALL_TIMEOUT_KEY, "30000")));
-        this.tokenSupplier = defaultTokenSupplier(bucketURI);
-        this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            // WebHDFS CREATE/OPEN may 307-redirect to a DataNode; we follow redirects manually to preserve the
-            // request body and Authorization header (JDK HttpClient drops the body on 307/308).
-            .followRedirects(HttpClient.Redirect.NEVER)
-            .build();
+        Supplier<String> tokenSupplier = defaultTokenSupplier(bucketURI);
+        this.client = new AsyncWebHdfsClient(tokenSupplier, restBase, hdfsPathPrefix, requestTimeout);
     }
 
     public static Builder builder() {
@@ -139,8 +128,7 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
     @Override
     public boolean readinessCheck() {
         try {
-            URI uri = URI.create(restBase + "?op=GETFILESTATUS");
-            HttpResponse<byte[]> resp = send("GET", uri, null).join();
+            HttpResponse<byte[]> resp = client.getFileStatus("").join();
             return resp.statusCode() == 200 || resp.statusCode() == 404;
         } catch (Throwable e) {
             LOGGER.error("WebHDFS readiness check failed", e);
@@ -155,19 +143,18 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         return openBytes(dataRel(path), start, end).thenApply(Unpooled::wrappedBuffer);
     }
 
+    /**
+     * Ranged OPEN through the client, translating a 404 into {@link ObjectNotExistException} (the not-exist signal the
+     * ObjectStorage contract and WAL recovery expect); any other WebHDFS error propagates unchanged for retry
+     * classification.
+     */
     private CompletableFuture<byte[]> openBytes(String rel, long start, long end) {
-        String[] params = (end == RANGE_READ_TO_END)
-            ? new String[] {"offset", Long.toString(start)}
-            : new String[] {"offset", Long.toString(start), "length", Long.toString(end - start)};
-        return send("GET", opUri(rel, "OPEN", params), null).thenApply(resp -> {
-            int sc = resp.statusCode();
-            if (sc == 200) {
-                return resp.body();
-            }
-            if (sc == 404) {
+        return client.open(rel, start, end).exceptionally(ex -> {
+            Throwable cause = FutureUtil.cause(ex);
+            if (cause instanceof WebHdfsException && ((WebHdfsException) cause).statusCode() == 404) {
                 throw new CompletionException(new ObjectNotExistException());
             }
-            throw new CompletionException(httpError("OPEN " + rel, resp));
+            throw new CompletionException(cause);
         });
     }
 
@@ -191,54 +178,8 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
             ? CompletableFuture.completedFuture(null)
             : ensureDir(parent);
         return ensureParent
-            .thenCompose(v -> create(stagingRel, body, true))
-            .thenCompose(v -> renameTo(stagingRel, rel));
-    }
-
-    private CompletableFuture<Void> create(String rel, byte[] body, boolean overwrite) {
-        URI uri = opUri(rel, "CREATE", "overwrite", Boolean.toString(overwrite), "data", "true");
-        return oneShotWrite("PUT", uri, body, "CREATE " + rel, 201, 200);
-    }
-
-    private CompletableFuture<Void> append(String rel, byte[] body) {
-        URI uri = opUri(rel, "APPEND", "data", "true");
-        return oneShotWrite("POST", uri, body, "APPEND " + rel, 200);
-    }
-
-    /**
-     * Single-request WebHDFS write: sends the payload inline with {@code data=true} and {@code application/octet-stream},
-     * which an HttpFS-style gateway accepts directly (one round-trip). If instead the gateway is a classic WebHDFS that
-     * replies with a redirect to a DataNode, the body is streamed to that {@code Location} as a fallback.
-     */
-    private CompletableFuture<Void> oneShotWrite(String method, URI uri, byte[] body, String op, int... okCodes) {
-        return sendRaw(method, uri, body, "application/octet-stream").thenCompose(resp -> {
-            String location = writeRedirectLocation(resp);
-            if (location != null) {
-                return sendRaw(method, URI.create(location), body, "application/octet-stream")
-                    .thenAccept(dataResp -> expectOk(dataResp, op, okCodes));
-            }
-            expectOk(resp, op, okCodes);
-            return CompletableFuture.completedFuture(null);
-        });
-    }
-
-    /** Extracts the DataNode upload URL from either a {@code noredirect} JSON body or a 3xx {@code Location} header. */
-    private static String writeRedirectLocation(HttpResponse<byte[]> resp) {
-        int sc = resp.statusCode();
-        if (sc == 307 || sc == 308 || sc == 301 || sc == 302 || sc == 303) {
-            return resp.headers().firstValue("Location").orElse(null);
-        }
-        if (sc == 200 && resp.body() != null && resp.body().length > 0) {
-            try {
-                JsonNode loc = JSON.readTree(resp.body()).path("Location");
-                if (!loc.isMissingNode() && StringUtils.isNotEmpty(loc.asText())) {
-                    return loc.asText();
-                }
-            } catch (IOException ignored) {
-                // Fall through to null: the caller reports the original response as an error.
-            }
-        }
-        return null;
+            .thenCompose(v -> client.create(stagingRel, body, true))
+            .thenCompose(v -> client.renameTo(stagingRel, rel));
     }
 
     // ---- multipart ----
@@ -253,7 +194,7 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
     CompletableFuture<ObjectStorageCompletedPart> doUploadPart(WriteOptions options, String path, String uploadId,
         int partNumber, ByteBuf part) {
         String partRel = partRel(uploadId, partNumber);
-        return create(partRel, toBytes(part), true)
+        return client.create(partRel, toBytes(part), true)
             .thenApply(v -> new ObjectStorageCompletedPart(partNumber, partRel, null));
     }
 
@@ -263,7 +204,7 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         String partRel = partRel(uploadId, partNumber);
         // WebHDFS has no server-side ranged copy; read the source range and write it as a new part through the gateway.
         return openBytes(dataRel(sourcePath), start, end)
-            .thenCompose(bytes -> create(partRel, bytes, true))
+            .thenCompose(bytes -> client.create(partRel, bytes, true))
             .thenApply(v -> new ObjectStorageCompletedPart(partNumber, partRel, null));
     }
 
@@ -282,11 +223,11 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
             String partRel = ordered.get(i).getPartId();
             boolean first = i == 0;
             chain = chain.thenCompose(v -> openBytes(partRel, 0, RANGE_READ_TO_END)
-                .thenCompose(bytes -> first ? create(stagingRel, bytes, true) : append(stagingRel, bytes)));
+                .thenCompose(bytes -> first ? client.create(stagingRel, bytes, true) : client.append(stagingRel, bytes)));
         }
         return chain
             .thenCompose(v -> rename(stagingRel, dataRel(path)))
-            .thenCompose(v -> deletePath(mpuDirRel(uploadId), true).exceptionally(ex -> {
+            .thenCompose(v -> client.deletePath(mpuDirRel(uploadId), true).exceptionally(ex -> {
                 LOGGER.warn("Failed to clean up multipart temp dir {}", uploadId, ex);
                 return null;
             }));
@@ -298,15 +239,7 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         CompletableFuture<Void> ensureParent = parent == null
             ? CompletableFuture.completedFuture(null)
             : ensureDir(parent);
-        return ensureParent.thenCompose(v -> renameTo(fromRel, toRel));
-    }
-
-    /** WebHDFS RENAME with OVERWRITE; the destination parent must already exist (see {@link #ensureDir}). */
-    private CompletableFuture<Void> renameTo(String fromRel, String toRel) {
-        URI uri = opUri(fromRel, "RENAME",
-            "destination", hdfsAbsPath(toRel),
-            "renameoptions", "OVERWRITE");
-        return send("PUT", uri, null).thenAccept(resp -> expectOk(resp, "RENAME " + fromRel, 200));
+        return ensureParent.thenCompose(v -> client.renameTo(fromRel, toRel));
     }
 
     /** MKDIRS the directory once and cache it, so hot-path writes to the same dir skip the extra request. */
@@ -314,12 +247,7 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         if (ensuredDirs.contains(rel)) {
             return CompletableFuture.completedFuture(null);
         }
-        return mkdirs(rel).thenRun(() -> ensuredDirs.add(rel));
-    }
-
-    private CompletableFuture<Void> mkdirs(String rel) {
-        // MKDIRS creates all missing intermediate directories and is idempotent (succeeds if the path already exists).
-        return send("PUT", opUri(rel, "MKDIRS"), null).thenAccept(resp -> expectOk(resp, "MKDIRS " + rel, 200));
+        return client.mkdirs(rel).thenRun(() -> ensuredDirs.add(rel));
     }
 
     // ---- delete ----
@@ -328,19 +256,9 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
     CompletableFuture<Void> doDeleteObjects(List<String> objectKeys) {
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (String key : objectKeys) {
-            chain = chain.thenCompose(v -> deletePath(dataRel(key), false));
+            chain = chain.thenCompose(v -> client.deletePath(dataRel(key), false));
         }
         return chain;
-    }
-
-    private CompletableFuture<Void> deletePath(String rel, boolean recursive) {
-        URI uri = opUri(rel, "DELETE", "recursive", Boolean.toString(recursive));
-        return send("DELETE", uri, null).thenAccept(resp -> {
-            // 404 means already gone; treat as success for idempotent delete.
-            if (resp.statusCode() != 200 && resp.statusCode() != 404) {
-                throw new CompletionException(httpError("DELETE " + rel, resp));
-            }
-        });
     }
 
     // ---- list ----
@@ -352,7 +270,7 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
     }
 
     private CompletableFuture<Void> listRecursive(String rel, String keyPrefix, List<ObjectInfo> out) {
-        return send("GET", opUri(rel, "LISTSTATUS"), null).thenCompose(resp -> {
+        return client.listStatus(rel).thenCompose(resp -> {
             if (resp.statusCode() == 404) {
                 return CompletableFuture.completedFuture(null);
             }
@@ -392,6 +310,12 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         }
     }
 
+    /** Uniform WebHDFS error carrying the HTTP status, used for the LISTSTATUS tree walk's non-2xx responses. */
+    private static WebHdfsException httpError(String op, HttpResponse<byte[]> resp) {
+        return new WebHdfsException(resp.statusCode(),
+            WebHdfsProtocol.errorMessage(op, resp.statusCode(), resp.body()));
+    }
+
     // ---- retry strategy ----
 
     @Override
@@ -403,7 +327,7 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
             || cause instanceof UnsupportedOperationException) {
             strategy = RetryStrategy.ABORT;
         } else if (cause instanceof WebHdfsException) {
-            int sc = ((WebHdfsException) cause).statusCode;
+            int sc = ((WebHdfsException) cause).statusCode();
             // 4xx (except throttling/timeout) are not retriable; 5xx and connectivity errors are.
             if (sc >= 400 && sc < 500 && sc != 408 && sc != 429) {
                 strategy = RetryStrategy.ABORT;
@@ -417,82 +341,7 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         // JDK HttpClient has no explicit close (its executor is a daemon); nothing to release.
     }
 
-    // ---- HTTP plumbing ----
-
-    private CompletableFuture<HttpResponse<byte[]>> send(String method, URI uri, byte[] body) {
-        return send(method, uri, body, 0);
-    }
-
-    /**
-     * Single HTTP exchange with no automatic redirect following, used for the two-phase WebHDFS write handshake where
-     * each phase must be controlled explicitly (the redirect target already carries its own auth token).
-     */
-    private CompletableFuture<HttpResponse<byte[]>> sendRaw(String method, URI uri, byte[] body, String contentType) {
-        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-            .timeout(requestTimeout)
-            .header("Authorization", "Bearer " + tokenSupplier.get());
-        if (contentType != null) {
-            builder.header("Content-Type", contentType);
-        }
-        builder.method(method, body == null
-            ? HttpRequest.BodyPublishers.noBody()
-            : HttpRequest.BodyPublishers.ofByteArray(body));
-        return httpClient.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
-    }
-
-    private CompletableFuture<HttpResponse<byte[]>> send(String method, URI uri, byte[] body, int redirectCount) {
-        HttpRequest.BodyPublisher publisher = body == null
-            ? HttpRequest.BodyPublishers.noBody()
-            : HttpRequest.BodyPublishers.ofByteArray(body);
-        HttpRequest request = HttpRequest.newBuilder(uri)
-            .timeout(requestTimeout)
-            .header("Authorization", "Bearer " + tokenSupplier.get())
-            .method(method, publisher)
-            .build();
-        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-            .thenCompose(resp -> {
-                int sc = resp.statusCode();
-                if ((sc == 307 || sc == 308 || sc == 301 || sc == 302 || sc == 303) && redirectCount < MAX_REDIRECTS) {
-                    Optional<String> location = resp.headers().firstValue("Location");
-                    if (location.isPresent()) {
-                        return send(method, URI.create(location.get()), body, redirectCount + 1);
-                    }
-                }
-                return CompletableFuture.completedFuture(resp);
-            });
-    }
-
-    private static void expectOk(HttpResponse<byte[]> resp, String op, int... okCodes) {
-        for (int ok : okCodes) {
-            if (resp.statusCode() == ok) {
-                return;
-            }
-        }
-        throw new CompletionException(httpError(op, resp));
-    }
-
-    private static WebHdfsException httpError(String op, HttpResponse<byte[]> resp) {
-        String body = resp.body() == null ? "" : new String(resp.body(), StandardCharsets.UTF_8);
-        return new WebHdfsException(resp.statusCode(),
-            String.format("WebHDFS %s failed, status=%d, body=%s", op, resp.statusCode(), body));
-    }
-
     // ---- path helpers ----
-
-    private URI opUri(String rel, String op, String... params) {
-        StringBuilder sb = new StringBuilder(restBase)
-            .append('/').append(rel)
-            .append("?op=").append(op);
-        for (int i = 0; i + 1 < params.length; i += 2) {
-            sb.append('&').append(params[i]).append('=').append(params[i + 1]);
-        }
-        return URI.create(sb.toString());
-    }
-
-    /** HDFS absolute path for {@code rel}, e.g. {@code /<subcluster>/automq/data/<key>}. */
-    private String hdfsAbsPath(String rel) {
-        return hdfsPathPrefix + "/" + rel;
-    }
 
     /**
      * Maps a logical object key to its physical HDFS relative path using a bucketed, flattened layout:
@@ -545,44 +394,15 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
     }
 
     private static Supplier<String> defaultTokenSupplier(BucketURI bucketURI) {
-        // 1) An explicit static token (dev/tests) takes precedence.
+        // 3-tier resolution (static token -> Azure Workload Identity -> AAD_TOKEN env) lives in the shared resolver;
+        // here we only extract the WebHDFS-specific config keys. The env HDFS_TOKEN_SCOPE fallback is handled inside.
         String token = bucketURI.extensionString("token", null);
-        if (StringUtils.isNotBlank(token)) {
-            return () -> token;
-        }
-        // 2) Azure Workload Identity federation: exchange the projected token for a refreshing Entra ID token.
-        if (WorkloadIdentityTokenProvider.isAvailable()) {
-            String scope = bucketURI.extensionString("tokenScope", System.getenv(TOKEN_SCOPE_ENV));
-            if (StringUtils.isBlank(scope)) {
-                throw new IllegalStateException(
-                    "Azure Workload Identity requires a token scope: set BucketURI 'tokenScope' or env " + TOKEN_SCOPE_ENV);
-            }
-            LOGGER.info("Using Azure Workload Identity for WebHDFS auth, scope={}", scope);
-            return WorkloadIdentityTokenProvider.fromEnvironment(scope);
-        }
-        // 3) Fallback to a static token from the environment (non-refreshing).
-        return () -> {
-            String env = System.getenv("AAD_TOKEN");
-            if (StringUtils.isBlank(env)) {
-                throw new IllegalStateException(
-                    "No Entra ID token: set BucketURI 'token', configure Azure Workload Identity, or set env AAD_TOKEN");
-            }
-            return env;
-        };
+        String scope = bucketURI.extensionString("tokenScope", null);
+        return WorkloadIdentityTokens.resolve(token, scope, "WebHDFS token");
     }
 
     private static String trimTrailingSlash(String s) {
         return s != null && s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
-    }
-
-    /** WebHDFS REST error carrying the HTTP status code for retry classification. */
-    static final class WebHdfsException extends IOException {
-        private final int statusCode;
-
-        WebHdfsException(int statusCode, String message) {
-            super(message);
-            this.statusCode = statusCode;
-        }
     }
 
     public static class Builder {
