@@ -19,7 +19,6 @@
 
 package kafka.automq.table.io;
 
-import com.automq.stream.s3.operator.WorkloadIdentityTokenProvider;
 import com.automq.stream.s3.webhdfs.WebHdfsClient;
 
 import org.apache.iceberg.io.FileIO;
@@ -58,8 +57,6 @@ public class WebHdfsFileIO implements FileIO {
     public static final String TOKEN_SCOPE_PROP = "webhdfs.token.scope";
     public static final String GATEWAY_PROP = "webhdfs.gateway";
     public static final String TIMEOUT_MS_PROP = "webhdfs.timeout.ms";
-    private static final String TOKEN_ENV = "AAD_TOKEN";
-    private static final String TOKEN_SCOPE_ENV = "HDFS_TOKEN_SCOPE";
 
     private Map<String, String> properties = Collections.emptyMap();
     private transient Supplier<String> tokenSupplier;
@@ -88,32 +85,8 @@ public class WebHdfsFileIO implements FileIO {
      * static {@code webhdfs.token} &gt; Azure Workload Identity (auto-refresh) &gt; static {@code AAD_TOKEN} env.
      */
     private static Supplier<String> defaultTokenSupplier(Map<String, String> props) {
-        // 1) An explicit static token (dev/tests) takes precedence.
-        String staticToken = props.get(TOKEN_PROP);
-        if (staticToken != null && !staticToken.isEmpty()) {
-            return () -> staticToken;
-        }
-        // 2) Azure Workload Identity federation: exchange the projected token for a refreshing Entra ID token.
-        if (WorkloadIdentityTokenProvider.isAvailable()) {
-            String scope = props.get(TOKEN_SCOPE_PROP);
-            if (scope == null || scope.isEmpty()) {
-                scope = System.getenv(TOKEN_SCOPE_ENV);
-            }
-            if (scope == null || scope.isEmpty()) {
-                throw new IllegalStateException("Azure Workload Identity requires a token scope: set '"
-                    + TOKEN_SCOPE_PROP + "' or env " + TOKEN_SCOPE_ENV);
-            }
-            return WorkloadIdentityTokenProvider.fromEnvironment(scope);
-        }
-        // 3) Fallback to a static token from the environment (non-refreshing).
-        return () -> {
-            String env = System.getenv(TOKEN_ENV);
-            if (env == null || env.isEmpty()) {
-                throw new IllegalStateException("No WebHDFS token: set '" + TOKEN_PROP
-                    + "', configure Azure Workload Identity, or set env " + TOKEN_ENV);
-            }
-            return env;
-        };
+        return com.automq.stream.s3.operator.WorkloadIdentityTokens.resolve(
+            props.get(TOKEN_PROP), props.get(TOKEN_SCOPE_PROP), "WebHDFS token");
     }
 
     private WebHdfsClient client() {
