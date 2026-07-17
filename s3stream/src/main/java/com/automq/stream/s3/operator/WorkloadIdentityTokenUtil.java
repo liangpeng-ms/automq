@@ -24,8 +24,9 @@ import org.apache.commons.lang3.StringUtils;
 import java.util.function.Supplier;
 
 /**
- * Resolves an Entra ID (AAD) bearer token in a 3-tier order shared by the AutoMQ HDFS/WebHDFS backends and the Iceberg
- * REST catalog auth:
+ * Builds an Entra ID (AAD) bearer-token supplier using a 3-tier resolution order shared by the AutoMQ HDFS/WebHDFS
+ * backends and the Iceberg REST catalog auth. Azure Workload Identity is the primary source; the other two tiers are
+ * escape hatches for when it is not configured:
  * <ol>
  *   <li>a static token (dev/tests) takes precedence;</li>
  *   <li>Azure Workload Identity (auto-refreshing), scope from the caller-provided value else env {@code HDFS_TOKEN_SCOPE};</li>
@@ -34,11 +35,11 @@ import java.util.function.Supplier;
  * Callers pass already-extracted values, so this class does not depend on any particular config carrier
  * ({@code Map}, {@code BucketURI}, ...).
  */
-public final class WorkloadIdentityTokens {
+public final class WorkloadIdentityTokenUtil {
     private static final String TOKEN_ENV = "AAD_TOKEN";
     private static final String TOKEN_SCOPE_ENV = "HDFS_TOKEN_SCOPE";
 
-    private WorkloadIdentityTokens() {
+    private WorkloadIdentityTokenUtil() {
     }
 
     /** Whether a bearer-token supplier can be resolved from the given static token / current environment. */
@@ -57,7 +58,7 @@ public final class WorkloadIdentityTokens {
      * @param explicitScope the Workload Identity scope from caller config, or null/empty to fall back to env
      * @param errCtx        a short noun phrase used only in the "no token" error message
      */
-    public static Supplier<String> resolve(String staticToken, String explicitScope, String errCtx) {
+    public static Supplier<String> tokenSupplier(String staticToken, String explicitScope, String errCtx) {
         if (StringUtils.isNotEmpty(staticToken)) {
             return () -> staticToken;
         }

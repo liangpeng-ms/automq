@@ -12,6 +12,7 @@ import java.net.URI;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WorkloadIdentityAuthManagerTest {
@@ -27,11 +28,22 @@ class WorkloadIdentityAuthManagerTest {
     @Test
     void injectsBearerFromStaticToken() {
         AuthManager mgr = new WorkloadIdentityAuthManager("test");
-        AuthSession session = mgr.catalogSession(null, Map.of(WorkloadIdentityTokens.TOKEN_PROP, "tkn-123"));
+        AuthSession session = mgr.catalogSession(null, Map.of(WorkloadIdentityAuthManager.TOKEN_PROP, "tkn-123"));
         HTTPRequest authed = session.authenticate(emptyRequest());
         assertTrue(authed.headers().contains("Authorization"));
         assertEquals("Bearer tkn-123",
             authed.headers().entries("Authorization").iterator().next().value());
+    }
+
+    @Test
+    void canSupplyToken_trueForStaticToken() {
+        assertTrue(WorkloadIdentityAuthManager.canSupplyToken(Map.of(WorkloadIdentityAuthManager.TOKEN_PROP, "static-abc")));
+    }
+
+    @Test
+    void canSupplyToken_falseWithoutTokenOrWorkloadIdentity() {
+        // Assumes the test JVM has neither a Workload Identity federated env nor AAD_TOKEN set.
+        assertFalse(WorkloadIdentityAuthManager.canSupplyToken(Map.of()));
     }
 
     @Test

@@ -398,7 +398,7 @@ public class HdfsObjectStorage extends AbstractObjectStorage {
         // here we only extract the WebHDFS-specific config keys. The env HDFS_TOKEN_SCOPE fallback is handled inside.
         String token = bucketURI.extensionString("token", null);
         String scope = bucketURI.extensionString("tokenScope", null);
-        return WorkloadIdentityTokens.resolve(token, scope, "WebHDFS token");
+        return WorkloadIdentityTokenUtil.tokenSupplier(token, scope, "WebHDFS token");
     }
 
     private static String trimTrailingSlash(String s) {

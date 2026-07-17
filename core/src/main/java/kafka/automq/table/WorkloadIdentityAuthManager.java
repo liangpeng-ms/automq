@@ -19,6 +19,8 @@
 
 package kafka.automq.table;
 
+import com.automq.stream.s3.operator.WorkloadIdentityTokenUtil;
+
 import org.apache.iceberg.rest.HTTPHeaders;
 import org.apache.iceberg.rest.HTTPRequest;
 import org.apache.iceberg.rest.ImmutableHTTPRequest;
@@ -37,14 +39,25 @@ import java.util.function.Supplier;
  */
 public class WorkloadIdentityAuthManager implements AuthManager {
 
+    /** REST catalog config key holding a static bearer token (dev/tests). */
+    public static final String TOKEN_PROP = "token";
+    /** REST catalog config key holding the Azure Workload Identity token scope. */
+    public static final String TOKEN_SCOPE_PROP = "token.scope";
+
     // Required by AuthManagers reflective loading (impl(name)).
     @SuppressWarnings("UnusedVariable")
     public WorkloadIdentityAuthManager(String name) {
     }
 
+    /** Whether a bearer-token supplier can be resolved from the given catalog config / environment. */
+    public static boolean canSupplyToken(Map<String, String> config) {
+        return WorkloadIdentityTokenUtil.canSupply(config.get(TOKEN_PROP));
+    }
+
     @Override
     public AuthSession catalogSession(RESTClient sharedClient, Map<String, String> properties) {
-        Supplier<String> tokenSupplier = WorkloadIdentityTokens.tokenSupplier(properties);
+        Supplier<String> tokenSupplier = WorkloadIdentityTokenUtil.tokenSupplier(
+            properties.get(TOKEN_PROP), properties.get(TOKEN_SCOPE_PROP), "REST catalog token");
         return new WorkloadIdentityAuthSession(tokenSupplier);
     }
 

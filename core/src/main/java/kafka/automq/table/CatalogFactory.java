@@ -219,7 +219,7 @@ public class CatalogFactory {
             catalogConfigs.forEach((k, v) -> tokenView.put(k, v == null ? null : v.toString()));
             if (!usesOAuth2Credential
                 && !catalogConfigs.containsKey("rest.auth.type")
-                && WorkloadIdentityTokens.canSupplyToken(tokenView)) {
+                && WorkloadIdentityAuthManager.canSupplyToken(tokenView)) {
                 options.put("rest.auth.type", "kafka.automq.table.WorkloadIdentityAuthManager");
             }
             putDataBucketAsWarehouse(false);

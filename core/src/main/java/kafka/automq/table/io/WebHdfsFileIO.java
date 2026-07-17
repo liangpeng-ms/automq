@@ -19,6 +19,7 @@
 
 package kafka.automq.table.io;
 
+import com.automq.stream.s3.operator.WorkloadIdentityTokenUtil;
 import com.automq.stream.s3.webhdfs.WebHdfsClient;
 
 import org.apache.iceberg.io.FileIO;
@@ -53,6 +54,8 @@ import java.util.function.Supplier;
  * can also be injected in-process via {@link #WebHdfsFileIO(Supplier)}.
  */
 public class WebHdfsFileIO implements FileIO {
+    private static final long serialVersionUID = 1L;
+
     public static final String TOKEN_PROP = "webhdfs.token";
     public static final String TOKEN_SCOPE_PROP = "webhdfs.token.scope";
     public static final String GATEWAY_PROP = "webhdfs.gateway";
@@ -85,7 +88,7 @@ public class WebHdfsFileIO implements FileIO {
      * static {@code webhdfs.token} &gt; Azure Workload Identity (auto-refresh) &gt; static {@code AAD_TOKEN} env.
      */
     private static Supplier<String> defaultTokenSupplier(Map<String, String> props) {
-        return com.automq.stream.s3.operator.WorkloadIdentityTokens.resolve(
+        return WorkloadIdentityTokenUtil.tokenSupplier(
             props.get(TOKEN_PROP), props.get(TOKEN_SCOPE_PROP), "WebHDFS token");
     }
 
