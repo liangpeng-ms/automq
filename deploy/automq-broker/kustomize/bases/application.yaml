@@ -1,34 +1,24 @@
-# AutoMQ SEPARATED-mode BROKER tier (dedicated brokers, data plane).
+# AutoMQ DYNAMIC-quorum BROKER tier (dedicated brokers, data plane).
 #
-# The BROKER half of the separated topology. Deploy together with
-# automq-controller-separated.yaml (the CONTROLLER half).
+# The BROKER half of the SEPARATED, SCALABLE topology. Deploy with
+# automq-controller-rongyu (controllers) and automq-controller-init-rongyu (seed).
 #
-# IMPORTANT — naming collision (intentional, per your choice):
-#   This reuses the name automq-broker-pelian, SAME as the combined deployment
-#   (automq-multi-rongyu.yaml). You CANNOT run both at once. Deploying this
-#   REPLACES the combined broker+controller pods with pure brokers that rely on
-#   the separate automq-controller-pelian quorum. Keep the combined yaml on disk
-#   for when you want to switch back.
+# Topology: brokers (process.roles=broker), scale this freely.
+#   node.id = 100000 + ordinal  -> 100000 / 100001 / 100002 / ...
+#   Brokers are NOT voters. They discover the controller quorum via
+#   controller.quorum.bootstrap.servers (the controller + seed MCS Service DNS),
+#   so adding a broker never touches the quorum -- the point of separated mode.
 #
-# Topology: 3 brokers (process.roles=broker), scale this freely.
-#   node.id = 100000 + ordinal  -> 100000 / 100001 / 100002
-#   Brokers are NOT voters. controller.quorum.voters points ONLY at the 3
-#   dedicated controllers (200000/200001/200002). Adding a broker never touches
-#   the quorum -- this is the whole point of separated mode.
-#
-# Key differences vs controller tier:
-#   - process.roles=broker -> start.sh binds ONLY PLAINTEXT://<ip>:9092. Probes
-#     target 9092 (kafka), which is also the client bootstrap port.
-#   - Table Topic / Schema Registry config is appended to broker.properties
-#     (NOT server.properties): in broker-only role start.sh launches
-#     broker.properties. Appending to server.properties would be ignored.
+# Cross-cluster: brokers reach controllers in OTHER clusters via the MCS
+# clusterset.local Service DNS (no per-pod ordinal); those Services MUST be
+# exported (ServiceExport) on the fleet side.
 apiVersion: apis.clusterfleet.io/v1alpha1
 kind: Application
 metadata:
   annotations:
   labels:
     microsoft-falcon.net/workload-state: stateful
-  name: automq-broker-pelian
+  name: automq-broker-rongyu
   namespace: magnetar-test
 spec:
   priorityClassName: prod
@@ -45,7 +35,7 @@ spec:
         apiVersion: v1
         kind: Service
         metadata:
-          name: automq-broker-pelian
+          name: automq-broker-rongyu
           namespace: magnetar-test
         spec:
           clusterIP: None
@@ -61,7 +51,7 @@ spec:
           publishNotReadyAddresses: true
           selector:
             app.kubernetes.io/component: service
-            app.kubernetes.io/instance: magnetar-test.automq-broker-pelian
+            app.kubernetes.io/instance: magnetar-test.automq-broker-rongyu
           type: ClusterIP
     - manifest:
         apiVersion: apps/v1
@@ -69,8 +59,8 @@ spec:
         metadata:
           labels:
             app.kubernetes.io/component: service
-            app.kubernetes.io/instance: magnetar-test.automq-broker-pelian
-          name: automq-broker-pelian
+            app.kubernetes.io/instance: magnetar-test.automq-broker-rongyu
+          name: automq-broker-rongyu
           namespace: magnetar-test
         spec:
           replicas: 3
@@ -78,8 +68,8 @@ spec:
           selector:
             matchLabels:
               app.kubernetes.io/component: service
-              app.kubernetes.io/instance: magnetar-test.automq-broker-pelian
-          serviceName: automq-broker-pelian
+              app.kubernetes.io/instance: magnetar-test.automq-broker-rongyu
+          serviceName: automq-broker-rongyu
           template:
             metadata:
               annotations:
@@ -88,7 +78,7 @@ spec:
                 prometheus.io/scrape: 'true'
               labels:
                 app.kubernetes.io/component: service
-                app.kubernetes.io/instance: magnetar-test.automq-broker-pelian
+                app.kubernetes.io/instance: magnetar-test.automq-broker-rongyu
                 azure.workload.identity/use: 'true'
             spec:
               serviceAccountName: falconfleet-magnetar-test-sa
@@ -96,47 +86,46 @@ spec:
                 - command:
                     - bash
                     - '-c'
-                    - >
+                    - |
                       set -euo pipefail
-
+                      # Per-pod identity: pod automq-broker-rongyu-<N> -> node.id 100000+N
                       ORD="${HOSTNAME##*-}"
-
                       NODE_ID="$((100000 + ORD))"
+                      export KAFKA_CONF_NODE_ID="$NODE_ID"
+                      export KAFKA_CONF_ADVERTISED_LISTENERS="PLAINTEXT://$POD_IP:9092"
 
+                      # Render broker.properties from every KAFKA_CONF_* env var
+                      # (strip KAFKA_CONF_ prefix, lowercase, '_' -> '.').
+                      CONFIG_FILE=/opt/automq/kafka/config/kraft/broker.properties
+                      : > "$CONFIG_FILE"
+                      for var in ${!KAFKA_CONF_@}; do
+                        key=$(printf '%s' "${var#KAFKA_CONF_}" | tr 'A-Z_' 'a-z.')
+                        printf '%s=%s\n' "$key" "${!var}" >> "$CONFIG_FILE"
+                      done
 
-                      # Brokers point at the DEDICATED controller quorum (node
-                      id 200000 on the controller StatefulSet's DNS). This list
-                      is IDENTICAL to the one in the controller tier. Brokers
-                      themselves are NOT in it.
+                      # Table Topic / Schema Registry config (broker-only) appended to
+                      # broker.properties. Uses the new HDFS FileIO FQN.
+                      printf '%s\n' \
+                        'automq.table.topic.catalog.type=rest' \
+                        'automq.table.topic.catalog.uri=https://api.magnetar.binginternal.com/unity-catalog/api/2.1/unity-catalog/iceberg' \
+                        'automq.table.topic.catalog.warehouse=test_catalog1' \
+                        'automq.table.topic.catalog.io-impl=com.automq.hdfs.table.io.WebHdfsFileIO' \
+                        'automq.table.topic.catalog.header.subcluster=AKS-NorthEurope-FLEET' \
+                        'automq.table.topic.schema.registry.url=https://api.magnetar.binginternal.com/schema-registry' \
+                        'automq.table.topic.schema.registry.config.bearer.auth.credentials.source=WORKLOAD_IDENTITY' \
+                        'automq.table.topic.schema.registry.config.request.header.subcluster=AKS-NorthEurope-FLEET' \
+                        'automq.table.topic.schema.registry.config.auto.register.schemas=false' \
+                        >> "$CONFIG_FILE"
 
-                      CSVC="automq-controller-pelian"
-
-                      VOTERS="200000@${CSVC}-0.${CSVC}.${POD_NAMESPACE}.svc.cluster.local:9093"
-
-
-                      # Table Topic catalog config appended to broker.properties
-                      (broker-only role launches broker.properties, not
-                      server.properties). start.sh 'up' only parses a fixed set
-                      of --flags, so extra config must go via the properties file.
-
-                      printf '%s\n' 'automq.table.topic.catalog.type=rest' 'automq.table.topic.catalog.uri=https://api.magnetar.binginternal.com/unity-catalog/api/2.1/unity-catalog/iceberg' 'automq.table.topic.catalog.warehouse=test_catalog1' 'automq.table.topic.catalog.io-impl=com.automq.hdfs.table.io.WebHdfsFileIO' 'automq.table.topic.catalog.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.url=https://api.magnetar.binginternal.com/schema-registry' 'automq.table.topic.schema.registry.config.bearer.auth.credentials.source=WORKLOAD_IDENTITY' 'automq.table.topic.schema.registry.config.request.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.config.auto.register.schemas=false' >> /opt/automq/kafka/config/kraft/broker.properties
-
-                      exec /opt/automq/scripts/start.sh up
-                      --process.roles broker
-                      --node.id "$NODE_ID"
-                      --controller.quorum.voters "$VOTERS"
-                      --cluster.id OB_fAKFJOMYdbIqpoJ6eSQ
-                      --s3.bucket dummy
-                      --s3.endpoint http://dummy
-                      --s3.region us-east-1
+                      exec /opt/automq/kafka/bin/kafka-server-start.sh "$CONFIG_FILE"
                   env:
-                    - name: KAFKA_CFG_S3_DATA_BUCKETS
+                    - name: KAFKA_CONF_S3_DATA_BUCKETS
                       value: >-
                         0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/data
-                    - name: KAFKA_CFG_S3_OPS_BUCKETS
+                    - name: KAFKA_CONF_S3_OPS_BUCKETS
                       value: >-
                         0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/data
-                    - name: KAFKA_CFG_S3_WAL_PATH
+                    - name: KAFKA_CONF_S3_WAL_PATH
                       value: >-
                         -3@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/wal
                     - name: HDFS_TOKEN_SCOPE
@@ -149,19 +138,35 @@ spec:
                       valueFrom:
                         fieldRef:
                           fieldPath: status.podIP
-                    - name: KAFKA_CFG_LOG_DIRS
+                    - name: KAFKA_CONF_PROCESS_ROLES
+                      value: broker
+                    - name: KAFKA_CONF_LISTENERS
+                      value: PLAINTEXT://:9092
+                    - name: KAFKA_CONF_INTER_BROKER_LISTENER_NAME
+                      value: PLAINTEXT
+                    - name: KAFKA_CONF_CONTROLLER_LISTENER_NAMES
+                      value: CONTROLLER
+                    - name: KAFKA_CONF_CLUSTER_ID
+                      value: OB_fAKFJOMYdbIqpoJ6eSQ
+                    # Discover the dynamic controller quorum: controller Service AND
+                    # the one-shot seed, both via MCS clusterset DNS (cross-cluster).
+                    - name: KAFKA_CONF_CONTROLLER_QUORUM_BOOTSTRAP_SERVERS
+                      value: automq-controller-rongyu.magnetar-test.svc.clusterset.local:9093,automq-controller-init-rongyu.magnetar-test.svc.clusterset.local:9093
+                    - name: KAFKA_CONF_LOG_DIRS
                       value: /tmp/kraft-broker-logs
-                    - name: KAFKA_CFG_ELASTICSTREAM_ENABLE
+                    - name: KAFKA_CONF_ELASTICSTREAM_ENABLE
                       value: 'true'
-                    - name: KAFKA_CFG_S3_STREAM_ALLOCATOR_POLICY
+                    - name: KAFKA_CONF_S3_STREAM_ALLOCATOR_POLICY
                       value: POOLED_DIRECT
-                    - name: KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR
+                    - name: KAFKA_CONF_OFFSETS_TOPIC_REPLICATION_FACTOR
                       value: '3'
-                    - name: KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+                    - name: KAFKA_CONF_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
                       value: '3'
-                    - name: KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR
+                    - name: KAFKA_CONF_TRANSACTION_STATE_LOG_MIN_ISR
                       value: '2'
-                    - name: KAFKA_CFG_S3_TELEMETRY_METRICS_EXPORTER_URI
+                    - name: KAFKA_CONF_METRIC_REPORTERS
+                      value: kafka.autobalancer.metricsreporter.AutoBalancerMetricsReporter
+                    - name: KAFKA_CONF_S3_TELEMETRY_METRICS_EXPORTER_URI
                       value: prometheus://?host=0.0.0.0&port=9090
                     - name: KAFKA_HEAP_OPTS
                       value: >-
@@ -180,7 +185,7 @@ spec:
                     tcpSocket:
                       port: kafka
                     timeoutSeconds: 10
-                  name: automq-broker-pelian
+                  name: automq-broker-rongyu
                   ports:
                     - containerPort: 9092
                       name: kafka
