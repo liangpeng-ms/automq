@@ -1,3 +1,0 @@
-- op: replace
-  path: /spec/workload/1/manifest/spec/template/spec/containers/0/image
-  value: msbingmtcr.azurecr.io/rongyu/automq:test0712sr
