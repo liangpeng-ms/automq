@@ -21,6 +21,7 @@ package kafka.automq.table;
 
 import kafka.server.KafkaConfig;
 
+import com.automq.hdfs.table.auth.WorkloadIdentityAuthManager;
 import com.automq.stream.s3.operator.AwsObjectStorage;
 import com.automq.stream.s3.operator.BucketURI;
 import com.automq.stream.utils.IdURI;
@@ -214,14 +215,7 @@ public class CatalogFactory {
             // automq.table.topic.catalog.rest.auth.type=org.apache.iceberg.connect.auth.FicAuthManager plus
             // fic.mi-client-id / fic.app-client-id.
             catalogImpl = "org.apache.iceberg.rest.RESTCatalog";
-            boolean usesOAuth2Credential = catalogConfigs.containsKey("credential");
-            Map<String, String> tokenView = new HashMap<>();
-            catalogConfigs.forEach((k, v) -> tokenView.put(k, v == null ? null : v.toString()));
-            if (!usesOAuth2Credential
-                && !catalogConfigs.containsKey("rest.auth.type")
-                && WorkloadIdentityAuthManager.canSupplyToken(tokenView)) {
-                options.put("rest.auth.type", "kafka.automq.table.WorkloadIdentityAuthManager");
-            }
+            WorkloadIdentityAuthManager.maybeSelectAuthType(catalogConfigs, options);
             putDataBucketAsWarehouse(false);
         }
 

@@ -17,40 +17,42 @@
  * limitations under the License.
  */
 
-package kafka.automq.table.io;
+package com.automq.hdfs.table.io;
 
 import com.automq.stream.s3.webhdfs.WebHdfsClient;
 
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.SeekableInputStream;
+import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.PositionOutputStream;
 
-class WebHdfsInputFile implements InputFile {
+import java.io.IOException;
+import java.io.UncheckedIOException;
+
+class WebHdfsOutputFile implements OutputFile {
     private final WebHdfsClient client;
     private final String location;
-    private long length = -1L;
 
-    WebHdfsInputFile(WebHdfsClient client, String location) {
+    WebHdfsOutputFile(WebHdfsClient client, String location) {
         this.client = client;
         this.location = location;
-    }
-
-    WebHdfsInputFile(WebHdfsClient client, String location, long length) {
-        this.client = client;
-        this.location = location;
-        this.length = length;
     }
 
     @Override
-    public long getLength() {
-        if (length < 0) {
-            length = client.getLength(location);
+    public PositionOutputStream create() {
+        return create(false);
+    }
+
+    @Override
+    public PositionOutputStream createOrOverwrite() {
+        return create(true);
+    }
+
+    private PositionOutputStream create(boolean overwrite) {
+        try {
+            return new WebHdfsPositionOutputStream(client, location, overwrite);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
-        return length;
-    }
-
-    @Override
-    public SeekableInputStream newStream() {
-        return new WebHdfsSeekableInputStream(client, location);
     }
 
     @Override
@@ -59,7 +61,7 @@ class WebHdfsInputFile implements InputFile {
     }
 
     @Override
-    public boolean exists() {
-        return client.exists(location);
+    public InputFile toInputFile() {
+        return new WebHdfsInputFile(client, location);
     }
 }

@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-package kafka.automq.table.io;
+package com.automq.hdfs.table.io;
 
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;

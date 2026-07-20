@@ -106,7 +106,8 @@ include 'clients',
     'automq-shell',
     'automq-log-uploader',
     'automq-metrics',
-    'automq-hdfs-common'
+    'automq-hdfs-common',
+    'automq-table-hdfs'
 
 project(":storage:api").name = "storage-api"
 rootProject.name = 'kafka'

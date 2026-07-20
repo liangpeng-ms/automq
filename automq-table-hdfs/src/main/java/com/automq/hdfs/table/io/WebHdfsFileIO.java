@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-package kafka.automq.table.io;
+package com.automq.hdfs.table.io;
 
 import com.automq.hdfs.token.WorkloadIdentityTokenUtil;
 import com.automq.stream.s3.webhdfs.WebHdfsClient;

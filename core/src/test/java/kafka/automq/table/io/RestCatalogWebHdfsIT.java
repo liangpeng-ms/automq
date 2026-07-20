@@ -54,7 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Live combined smoke test: a real Iceberg {@link RESTCatalog} talking to the Unity Catalog Iceberg REST API, with
- * table data written through {@link WebHdfsFileIO} to the real MT HDFS (WebHDFS) — end to end. It creates a table,
+ * table data written through {@code WebHdfsFileIO} to the real MT HDFS (WebHDFS) — end to end. It creates a table,
  * writes a Parquet data file, commits it, reads the rows back, then drops the table.
  *
  * <p>Disabled unless {@code AAD_TOKEN} and {@code UC_SMOKE=true} are set (the token is short-lived, so refresh it right
@@ -90,7 +90,7 @@ public class RestCatalogWebHdfsIT {
         Map<String, String> props = new HashMap<>();
         props.put(CatalogProperties.URI, uri);
         props.put(CatalogProperties.WAREHOUSE_LOCATION, warehouse);
-        props.put(CatalogProperties.FILE_IO_IMPL, "kafka.automq.table.io.WebHdfsFileIO");
+        props.put(CatalogProperties.FILE_IO_IMPL, "com.automq.hdfs.table.io.WebHdfsFileIO");
         // UC requires the subcluster on every request; Iceberg sends header.* on all requests.
         props.put("header.subcluster", subcluster);
         // No static "token": the WorkloadIdentityAuthManager (rest.auth.type) injects a fresh bearer per request (WI
@@ -99,7 +99,7 @@ public class RestCatalogWebHdfsIT {
         // UC's DELETE/commit can be slow (purge deletes HDFS files); give the REST client generous timeouts.
         props.put("rest.client.connection-timeout-ms", "30000");
         props.put("rest.client.socket-timeout-ms", "120000");
-        props.put("rest.auth.type", "kafka.automq.table.WorkloadIdentityAuthManager");
+        props.put("rest.auth.type", "com.automq.hdfs.table.auth.WorkloadIdentityAuthManager");
 
         catalog = new RESTCatalog();
         catalog.initialize("uc", props);

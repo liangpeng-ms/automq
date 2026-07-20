@@ -71,7 +71,7 @@ class CatalogFactoryTest {
             final var builder = new CatalogFactory.Builder(config);
             try (final var closeable = assertInstanceOf(RESTCatalog.class, builder.build())) {
                 assertEquals(
-                    "kafka.automq.table.WorkloadIdentityAuthManager",
+                    "com.automq.hdfs.table.auth.WorkloadIdentityAuthManager",
                     builder.options.get("rest.auth.type"),
                     "rest.auth.type must select the WorkloadIdentityAuthManager when a token is resolvable");
             }

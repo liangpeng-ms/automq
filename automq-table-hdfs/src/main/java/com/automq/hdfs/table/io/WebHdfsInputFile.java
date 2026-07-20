@@ -17,42 +17,40 @@
  * limitations under the License.
  */
 
-package kafka.automq.table.io;
+package com.automq.hdfs.table.io;
 
 import com.automq.stream.s3.webhdfs.WebHdfsClient;
 
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
-import org.apache.iceberg.io.PositionOutputStream;
+import org.apache.iceberg.io.SeekableInputStream;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-
-class WebHdfsOutputFile implements OutputFile {
+class WebHdfsInputFile implements InputFile {
     private final WebHdfsClient client;
     private final String location;
+    private long length = -1L;
 
-    WebHdfsOutputFile(WebHdfsClient client, String location) {
+    WebHdfsInputFile(WebHdfsClient client, String location) {
         this.client = client;
         this.location = location;
     }
 
-    @Override
-    public PositionOutputStream create() {
-        return create(false);
+    WebHdfsInputFile(WebHdfsClient client, String location, long length) {
+        this.client = client;
+        this.location = location;
+        this.length = length;
     }
 
     @Override
-    public PositionOutputStream createOrOverwrite() {
-        return create(true);
-    }
-
-    private PositionOutputStream create(boolean overwrite) {
-        try {
-            return new WebHdfsPositionOutputStream(client, location, overwrite);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
+    public long getLength() {
+        if (length < 0) {
+            length = client.getLength(location);
         }
+        return length;
+    }
+
+    @Override
+    public SeekableInputStream newStream() {
+        return new WebHdfsSeekableInputStream(client, location);
     }
 
     @Override
@@ -61,7 +59,7 @@ class WebHdfsOutputFile implements OutputFile {
     }
 
     @Override
-    public InputFile toInputFile() {
-        return new WebHdfsInputFile(client, location);
+    public boolean exists() {
+        return client.exists(location);
     }
 }

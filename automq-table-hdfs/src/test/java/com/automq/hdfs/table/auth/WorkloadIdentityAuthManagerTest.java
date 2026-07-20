@@ -1,4 +1,4 @@
-package kafka.automq.table;
+package com.automq.hdfs.table.auth;
 
 import org.apache.iceberg.rest.HTTPRequest;
 import org.apache.iceberg.rest.ImmutableHTTPRequest;
@@ -49,7 +49,7 @@ class WorkloadIdentityAuthManagerTest {
     @Test
     void loadableViaRestAuthTypeSpi() {
         AuthManager mgr = AuthManagers.loadAuthManager(
-            "test", Map.of("rest.auth.type", "kafka.automq.table.WorkloadIdentityAuthManager"));
+            "test", Map.of("rest.auth.type", "com.automq.hdfs.table.auth.WorkloadIdentityAuthManager"));
         assertTrue(mgr instanceof WorkloadIdentityAuthManager);
         mgr.close();
     }

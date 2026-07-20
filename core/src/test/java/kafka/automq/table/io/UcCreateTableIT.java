@@ -73,11 +73,11 @@ public class UcCreateTableIT {
         Map<String, String> props = new HashMap<>();
         props.put(CatalogProperties.URI, uri);
         props.put(CatalogProperties.WAREHOUSE_LOCATION, warehouse);
-        props.put(CatalogProperties.FILE_IO_IMPL, "kafka.automq.table.io.WebHdfsFileIO");
+        props.put(CatalogProperties.FILE_IO_IMPL, "com.automq.hdfs.table.io.WebHdfsFileIO");
         props.put("header.subcluster", subcluster);
         props.put("rest.client.connection-timeout-ms", "30000");
         props.put("rest.client.socket-timeout-ms", "120000");
-        props.put("rest.auth.type", "kafka.automq.table.WorkloadIdentityAuthManager");
+        props.put("rest.auth.type", "com.automq.hdfs.table.auth.WorkloadIdentityAuthManager");
 
         RESTCatalog catalog = new RESTCatalog();
         catalog.initialize("uc", props);

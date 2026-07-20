@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-package kafka.automq.table;
+package com.automq.hdfs.table.auth;
 
 import com.automq.hdfs.token.WorkloadIdentityTokenUtil;
 
@@ -28,16 +28,20 @@ import org.apache.iceberg.rest.RESTClient;
 import org.apache.iceberg.rest.auth.AuthManager;
 import org.apache.iceberg.rest.auth.AuthSession;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
 
 /**
  * An Iceberg {@link AuthManager} that authenticates every REST request with a fresh Entra ID (AAD) bearer token, so a
  * long-lived catalog never fails once an initially-configured static token expires. Selected via
- * {@code rest.auth.type=kafka.automq.table.WorkloadIdentityAuthManager}. Replaces the pre-1.10
+ * {@code rest.auth.type=com.automq.hdfs.table.auth.WorkloadIdentityAuthManager}. Replaces the pre-1.10
  * RESTClient-decorator hack (Iceberg 1.6.1 had no AuthManager SPI).
  */
 public class WorkloadIdentityAuthManager implements AuthManager {
+
+    /** Fully-qualified name selected via {@code rest.auth.type}; also a runtime contract with deploy configs. */
+    public static final String AUTH_TYPE = "com.automq.hdfs.table.auth.WorkloadIdentityAuthManager";
 
     /** REST catalog config key holding a static bearer token (dev/tests). */
     public static final String TOKEN_PROP = "token";
@@ -52,6 +56,22 @@ public class WorkloadIdentityAuthManager implements AuthManager {
     /** Whether a bearer-token supplier can be resolved from the given catalog config / environment. */
     public static boolean canSupplyToken(Map<String, String> config) {
         return WorkloadIdentityTokenUtil.canSupply(config.get(TOKEN_PROP));
+    }
+
+    /**
+     * When no OAuth2 credential and no explicit {@code rest.auth.type} are configured but a bearer token can be
+     * resolved (static token / Azure Workload Identity / {@code AAD_TOKEN} env), select this AuthManager so every
+     * REST request carries a fresh token. Mutates {@code options} in place; no-op otherwise.
+     */
+    public static void maybeSelectAuthType(Map<String, Object> catalogConfigs, Map<String, String> options) {
+        if (catalogConfigs.containsKey("credential") || catalogConfigs.containsKey("rest.auth.type")) {
+            return;
+        }
+        Map<String, String> tokenView = new HashMap<>();
+        catalogConfigs.forEach((k, v) -> tokenView.put(k, v == null ? null : v.toString()));
+        if (canSupplyToken(tokenView)) {
+            options.put("rest.auth.type", AUTH_TYPE);
+        }
     }
 
     @Override
