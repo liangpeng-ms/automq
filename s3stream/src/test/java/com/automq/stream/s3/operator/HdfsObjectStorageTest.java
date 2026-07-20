@@ -22,10 +22,11 @@ package com.automq.stream.s3.operator;
 import com.automq.stream.s3.exceptions.ObjectNotExistException;
 import com.automq.stream.s3.webhdfs.WebHdfsException;
 import com.automq.stream.utils.FutureUtil;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,8 +45,6 @@ import java.util.TreeMap;
 import java.util.concurrent.CompletionException;
 import java.util.stream.Collectors;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 

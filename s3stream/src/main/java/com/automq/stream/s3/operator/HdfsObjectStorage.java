@@ -27,7 +27,6 @@ import com.automq.stream.s3.webhdfs.AsyncWebHdfsClient;
 import com.automq.stream.s3.webhdfs.WebHdfsException;
 import com.automq.stream.s3.webhdfs.WebHdfsProtocol;
 import com.automq.stream.utils.FutureUtil;
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
