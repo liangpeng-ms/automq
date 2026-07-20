@@ -21,11 +21,8 @@ package kafka.automq.table.process.convert;
 
 import kafka.automq.table.deserializer.proto.LatestSchemaResolutionResolver;
 import kafka.automq.table.deserializer.proto.ProtobufSchemaProvider;
-import kafka.automq.table.process.ConversionResult;
 import kafka.automq.table.process.Converter;
 import kafka.automq.table.process.SchemaFormat;
-import kafka.automq.table.process.exception.ConverterException;
-import kafka.automq.table.process.exception.InvalidDataException;
 import kafka.automq.table.process.exception.ProcessorInitializationException;
 import kafka.automq.table.worker.WorkerConfig;
 
@@ -38,15 +35,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
-import io.confluent.kafka.schemaregistry.ParsedSchema;
 import io.confluent.kafka.schemaregistry.avro.AvroSchemaProvider;
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
@@ -59,9 +53,6 @@ public class ConverterFactory {
 
     private static final String VALUE_SUFFIX = "-value";
     private static final String PROTOBUF_TYPE = "PROTOBUF";
-    // Confluent wire framing: magic byte (0x0) + 4-byte big-endian schema id.
-    private static final byte MAGIC_BYTE = 0x0;
-    private static final int SCHEMA_ID_HEADER_SIZE = 5;
     private static final Duration CACHE_EXPIRE_DURATION = Duration.ofMinutes(20);
     private static final int MAX_CACHE_SIZE = 10000;
 
@@ -91,40 +82,11 @@ public class ConverterFactory {
                 AbstractKafkaSchemaSerDeConfig.MAX_SCHEMAS_PER_SUBJECT_DEFAULT,
                 List.of(new AvroSchemaProvider(), new ProtobufSchemaProvider()),
                 configs,
-                extractHttpHeaders(configs)
+                ConfluentSchemaRegistry.extractHttpHeaders(configs)
             );
         } else {
             this.client = null;
         }
-    }
-
-    /**
-     * Extracts static HTTP headers from {@code request.header.*} client configs so they are sent on every Schema
-     * Registry request via the {@link CachedSchemaRegistryClient} {@code httpHeaders} constructor parameter. The
-     * Confluent {@code RestService.configure(...)} path does not read {@code request.header.*}; only headers set
-     * through {@code setHttpHeaders(...)} are sent. Keys may carry the Confluent client namespace prefix
-     * ({@code schema.registry.}) that AutoMQ prepends, so both prefixed and bare forms are handled.
-     *
-     * @return the header name/value map, or {@code null} when none are configured
-     */
-    static Map<String, String> extractHttpHeaders(Map<String, ?> configs) {
-        if (configs == null || configs.isEmpty()) {
-            return null;
-        }
-        String namespace = "schema.registry.";
-        String headerPrefix = "request.header.";
-        Map<String, String> headers = new HashMap<>();
-        for (Map.Entry<String, ?> entry : configs.entrySet()) {
-            String key = entry.getKey();
-            if (key == null || entry.getValue() == null) {
-                continue;
-            }
-            String stripped = key.startsWith(namespace) ? key.substring(namespace.length()) : key;
-            if (stripped.startsWith(headerPrefix) && stripped.length() > headerPrefix.length()) {
-                headers.put(stripped.substring(headerPrefix.length()), String.valueOf(entry.getValue()));
-            }
-        }
-        return headers.isEmpty() ? null : headers;
     }
 
     public ConverterFactory(String registryUrl, SchemaRegistryClient client) {
@@ -184,7 +146,8 @@ public class ConverterFactory {
         // Resolve the concrete format (Avro/Protobuf) from the schema id embedded in each record (magic byte + id)
         // via /schemas/ids/{id}, instead of a subject-name lookup. Some Schema Registries only authorize by-id reads,
         // so a subject lookup (getLatestSchemaMetadata) would be rejected even though by_schema_id conversion works.
-        return new SchemaIdConverter(isKey);
+        return new ConfluentSchemaRegistry.SchemaIdConverter(client,
+            format -> converterCache.computeIfAbsent(format, f -> createConverterForFormat(f, isKey)));
     }
 
     public Converter createForSubjectName(String topic, String subjectName, String messageFullName, boolean isKey) {
@@ -246,59 +209,6 @@ public class ConverterFactory {
             default:
                 LOGGER.error("Unsupported schema format '{}'", format);
                 throw new ProcessorInitializationException("Unsupported schema format: " + format);
-        }
-    }
-
-    /** Reads the Confluent-framed schema id (magic byte + 4-byte big-endian id) without consuming the buffer. */
-    static int readSchemaId(ByteBuffer buffer) {
-        if (buffer == null || buffer.remaining() < SCHEMA_ID_HEADER_SIZE) {
-            throw new InvalidDataException("Invalid payload size: " + (buffer == null ? 0 : buffer.remaining())
-                + ", expected at least " + SCHEMA_ID_HEADER_SIZE);
-        }
-        ByteBuffer buf = buffer.duplicate();
-        byte magicByte = buf.get();
-        if (magicByte != MAGIC_BYTE) {
-            throw new InvalidDataException("Unknown magic byte: " + magicByte);
-        }
-        return buf.getInt();
-    }
-
-    /**
-     * Converter for {@code by_schema_id} that determines the concrete format (Avro/Protobuf) from the schema id carried
-     * by each record, resolved through {@code /schemas/ids/{id}} — the only Schema Registry surface some deployments
-     * authorize. The concrete delegate is built lazily on the first record and cached (double-checked locking).
-     */
-    private final class SchemaIdConverter implements Converter {
-        private final boolean isKey;
-        private volatile Converter delegate;
-
-        SchemaIdConverter(boolean isKey) {
-            this.isKey = isKey;
-        }
-
-        @Override
-        public ConversionResult convert(String topic, ByteBuffer buffer) throws ConverterException {
-            Converter d = delegate;
-            if (d == null) {
-                d = initDelegate(buffer);
-            }
-            return d.convert(topic, buffer);
-        }
-
-        private synchronized Converter initDelegate(ByteBuffer buffer) throws ConverterException {
-            if (delegate == null) {
-                int schemaId = readSchemaId(buffer);
-                String schemaType;
-                try {
-                    ParsedSchema parsedSchema = client.getSchemaById(schemaId);
-                    schemaType = parsedSchema.schemaType();
-                } catch (RestClientException | IOException e) {
-                    throw new ConverterException("Failed to resolve schema id " + schemaId + " from registry", e);
-                }
-                SchemaFormat format = SchemaFormat.fromString(schemaType);
-                delegate = converterCache.computeIfAbsent(format.name(), f -> createConverterForFormat(f, isKey));
-            }
-            return delegate;
         }
     }
 
