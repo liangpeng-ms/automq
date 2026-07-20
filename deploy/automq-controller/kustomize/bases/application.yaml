@@ -1,0 +1,201 @@
+# AutoMQ SEPARATED-mode CONTROLLER tier (dedicated controllers, metadata only).
+#
+# This is the CONTROLLER half of the separated topology. Deploy together with
+# automq-broker-separated.yaml (the BROKER half). Compare to the combined
+# deployment (automq-multi-rongyu.yaml) where every pod is broker+controller.
+#
+# Why separated:
+#   - You can tell controllers from brokers at a glance (pod name prefix).
+#   - Brokers scale horizontally WITHOUT touching the controller quorum
+#     (combined mode can't: a 4th combined pod demands to join the fixed
+#      3-voter quorum and crash-loops on "node id must be in voters").
+#
+# Topology: 1 dedicated controller (process.roles=controller).
+#   node.id = 200000 + ordinal  -> 200000 (single controller)
+#   This 1 IS the entire controller.quorum.voters set. Fixed. Never changes
+#   when you add brokers.
+#   NOTE: single controller = no HA. If it dies, metadata ops (create topic,
+#   partition changes) stall until it restarts; already-stored data in HDFS is
+#   safe. Fine for perf testing (controllers carry no data-plane traffic, so 1
+#   vs 3 gives identical throughput). For production HA, use 3.
+#
+# Key differences vs the broker tier / combined:
+#   - process.roles=controller  -> start.sh binds ONLY CONTROLLER://<ip>:9093
+#     (NO 9092 kafka port on controllers). So probes MUST target 9093, not 9092.
+#   - No Table Topic / Schema Registry config here: catalog work happens on
+#     brokers, not controllers. Controllers only run the raft metadata log.
+#   - Smaller heap: controllers only hold metadata.
+apiVersion: apis.clusterfleet.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+  labels:
+    microsoft-falcon.net/workload-state: stateful
+  name: automq-controller-pelian
+  namespace: magnetar-test
+spec:
+  priorityClassName: prod
+  rollbackStrategy:
+    minReadyReplicas: 0
+    minReadySeconds: 0
+    progressDeadlineSeconds: 0
+    revisionHistoryLimit: 5
+  rolloutStrategy:
+    minAvailableReplicas: 100%
+  version: '20260624.2'
+  workload:
+    - manifest:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: automq-controller-pelian
+          namespace: magnetar-test
+        spec:
+          clusterIP: None
+          ports:
+            - name: controller
+              port: 9093
+              protocol: TCP
+              targetPort: controller
+            - name: metrics
+              port: 9090
+              protocol: TCP
+              targetPort: metrics
+          publishNotReadyAddresses: true
+          selector:
+            app.kubernetes.io/component: service
+            app.kubernetes.io/instance: magnetar-test.automq-controller-pelian
+          type: ClusterIP
+    - manifest:
+        apiVersion: apps/v1
+        kind: StatefulSet
+        metadata:
+          labels:
+            app.kubernetes.io/component: service
+            app.kubernetes.io/instance: magnetar-test.automq-controller-pelian
+          name: automq-controller-pelian
+          namespace: magnetar-test
+        spec:
+          replicas: 1
+          podManagementPolicy: Parallel
+          selector:
+            matchLabels:
+              app.kubernetes.io/component: service
+              app.kubernetes.io/instance: magnetar-test.automq-controller-pelian
+          serviceName: automq-controller-pelian
+          template:
+            metadata:
+              annotations:
+                prometheus.io/path: /metrics
+                prometheus.io/port: '9090'
+                prometheus.io/scrape: 'true'
+              labels:
+                app.kubernetes.io/component: service
+                app.kubernetes.io/instance: magnetar-test.automq-controller-pelian
+                azure.workload.identity/use: 'true'
+            spec:
+              serviceAccountName: falconfleet-magnetar-test-sa
+              containers:
+                - command:
+                    - bash
+                    - '-c'
+                    - >
+                      set -euo pipefail
+
+                      ORD="${HOSTNAME##*-}"
+
+                      NODE_ID="$((200000 + ORD))"
+
+
+                      # The controller quorum: 1 dedicated controller by stable
+                      StatefulSet DNS. IDENTICAL on the controller AND every
+                      broker. node id 200000 = ordinal 0.
+
+                      CSVC="automq-controller-pelian"
+
+                      VOTERS="200000@${CSVC}-0.${CSVC}.${POD_NAMESPACE}.svc.cluster.local:9093"
+
+
+                      exec /opt/automq/scripts/start.sh up
+                      --process.roles controller
+                      --node.id "$NODE_ID"
+                      --controller.quorum.voters "$VOTERS"
+                      --cluster.id OB_fAKFJOMYdbIqpoJ6eSQ
+                      --s3.bucket dummy
+                      --s3.endpoint http://dummy
+                      --s3.region us-east-1
+                  env:
+                    - name: KAFKA_CFG_S3_DATA_BUCKETS
+                      value: >-
+                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/data
+                    - name: KAFKA_CFG_S3_OPS_BUCKETS
+                      value: >-
+                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/data
+                    - name: KAFKA_CFG_S3_WAL_PATH
+                      value: >-
+                        -3@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/wal
+                    - name: HDFS_TOKEN_SCOPE
+                      value: api://1c0b8c88-563f-4b97-abdf-207172a50d2c/.default
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+                    - name: KAFKA_CFG_LOG_DIRS
+                      value: /tmp/kraft-controller-logs
+                    - name: KAFKA_CFG_ELASTICSTREAM_ENABLE
+                      value: 'true'
+                    - name: KAFKA_CFG_S3_STREAM_ALLOCATOR_POLICY
+                      value: POOLED_DIRECT
+                    - name: KAFKA_CFG_S3_TELEMETRY_METRICS_EXPORTER_URI
+                      value: prometheus://?host=0.0.0.0&port=9090
+                    - name: KAFKA_HEAP_OPTS
+                      value: >-
+                        -Xms1g -Xmx2g -XX:MetaspaceSize=96m
+                    - name: POD__ID
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                  image: msbingmtcr.azurecr.io/rongyu/automq:test0712sr
+                  imagePullPolicy: Always
+                  livenessProbe:
+                    failureThreshold: 12
+                    initialDelaySeconds: 120
+                    periodSeconds: 20
+                    tcpSocket:
+                      port: controller
+                    timeoutSeconds: 10
+                  name: automq-controller-pelian
+                  ports:
+                    - containerPort: 9093
+                      name: controller
+                      protocol: TCP
+                    - containerPort: 9090
+                      name: metrics
+                      protocol: TCP
+                  readinessProbe:
+                    failureThreshold: 6
+                    initialDelaySeconds: 20
+                    periodSeconds: 15
+                    tcpSocket:
+                      port: controller
+                    timeoutSeconds: 5
+                  resources:
+                    limits:
+                      cpu: 2000m
+                      memory: 6G
+                    requests:
+                      cpu: 2000m
+                      memory: 6G
+              nodeSelector:
+                kubernetes.azure.com/mode: user
+                kubernetes.io/os: linux
+                microsoft-falcon.net/ap-connectivity: ipv4regional
+                microsoft-falcon.net/cloud: azure
+                microsoft-falcon.net/cross-region-connectivity: regional
+                microsoft-falcon.net/use-case: generic
+                scheduler.clusterfleet.io/ready: 'true'
+              priorityClassName: prod
