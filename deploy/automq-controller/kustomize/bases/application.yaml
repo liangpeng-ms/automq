@@ -68,7 +68,7 @@ spec:
           name: automq-controller-rongyu
           namespace: magnetar-test
         spec:
-          replicas: 3
+          replicas: 1
           podManagementPolicy: Parallel
           selector:
             matchLabels:
@@ -99,22 +99,19 @@ spec:
                       NODE_ID="$((200000 + ORD))"
 
 
-                      # Static controller quorum roster: all 3 controllers by
-                      their stable StatefulSet per-pod DNS (same-cluster
-                      cluster.local, resolvable before Ready because the headless
-                      Service sets publishNotReadyAddresses). node ids
-                      200000/200001/200002 map to ordinals 0/1/2. This list is
-                      IDENTICAL on every controller AND every broker.
+                      # Single-controller CROSS-CLUSTER quorum. With exactly 1
+                      voter, the voter host may be a Service-level MCS address
+                      (clusterset.local, load-balanced) instead of a per-pod
+                      name -- there is only one controller pod behind it, so no
+                      per-id routing ambiguity. This is what lets a single
+                      controller be reached from OTHER clusters (per-pod
+                      cluster.local names are NOT exported cross-cluster).
+                      node.id 200000 = ordinal 0; this single entry IS the whole
+                      voter set. IDENTICAL on the controller AND every broker.
 
                       SVC="automq-controller-rongyu"
 
-                      REPLICAS=3
-
-                      VOTERS=""
-
-                      for i in $(seq 0 $((REPLICAS-1))); do
-                        VOTERS="${VOTERS}${VOTERS:+,}$((200000+i))@${SVC}-${i}.${SVC}.${POD_NAMESPACE}.svc.cluster.local:9093"
-                      done
+                      VOTERS="200000@${SVC}.${POD_NAMESPACE}.svc.clusterset.local:9093"
 
 
                       exec /opt/automq/scripts/start.sh up
@@ -128,13 +125,13 @@ spec:
                   env:
                     - name: KAFKA_CFG_S3_DATA_BUCKETS
                       value: >-
-                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/data
+                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/rongyu/test/falcon/data
                     - name: KAFKA_CFG_S3_OPS_BUCKETS
                       value: >-
-                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/data
+                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/rongyu/test/falcon/data
                     - name: KAFKA_CFG_S3_WAL_PATH
                       value: >-
-                        -3@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/pelian/test/falcon/wal
+                        -3@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/rongyu/test/falcon/wal
                     - name: HDFS_TOKEN_SCOPE
                       value: api://1c0b8c88-563f-4b97-abdf-207172a50d2c/.default
                     - name: POD_NAMESPACE
