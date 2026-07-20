@@ -62,7 +62,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <pre>
  * $env:AAD_TOKEN = (az account get-access-token --resource api://1c0b8c88-563f-4b97-abdf-207172a50d2c --query accessToken -o tsv)
  * $env:HDFS_TABLE_BASE = "hdfs://namenode0-vipv4.MTPrime-PROD-DUBE01.DUBE01.ap.gbl/user/pelian/test/falcon"
- * ./gradlew :core:test --tests kafka.automq.table.io.WebHdfsFileIOIT
+ * ./gradlew :automq-table-hdfs:test --tests com.automq.hdfs.table.io.WebHdfsFileIOIT
  * </pre>
  */
 @Timeout(180)

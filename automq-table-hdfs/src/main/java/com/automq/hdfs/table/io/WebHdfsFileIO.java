@@ -34,7 +34,7 @@ import java.util.function.Supplier;
 /**
  * Iceberg {@link FileIO} backed directly by the WebHDFS HTTP gateway (no Hadoop dependency). It lets AutoMQ Table Topic
  * write Parquet data/metadata files to HDFS through the same WebHDFS + Entra ID (AAD) bearer path already used by the
- * AutoMQ WAL/object-storage backend, by simply setting {@code io-impl=kafka.automq.table.io.WebHdfsFileIO}.
+ * AutoMQ WAL/object-storage backend, by simply setting {@code io-impl=com.automq.hdfs.table.io.WebHdfsFileIO}.
  *
  * <p>Locations use Hadoop's WebHDFS scheme convention: {@code webhdfs://host:port/path} (HTTP) or
  * {@code swebhdfs://host:port/path} (HTTPS).
