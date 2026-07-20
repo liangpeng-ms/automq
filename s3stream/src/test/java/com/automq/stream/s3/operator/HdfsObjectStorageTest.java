@@ -19,8 +19,8 @@
 
 package com.automq.stream.s3.operator;
 
+import com.automq.hdfs.common.webhdfs.WebHdfsException;
 import com.automq.stream.s3.exceptions.ObjectNotExistException;
-import com.automq.stream.s3.webhdfs.WebHdfsException;
 import com.automq.stream.utils.FutureUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;

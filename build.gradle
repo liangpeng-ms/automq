@@ -1022,7 +1022,7 @@ project(':core') {
     implementation libs.commonLang
     implementation libs.nettyHttp2
     implementation project(':s3stream')
-    implementation project(':automq-table-hdfs')
+    implementation project(':automq-hdfs-table')
     implementation libs.guava
     implementation libs.slf4jBridge
     implementation libs.slf4jReload4j
@@ -2394,8 +2394,8 @@ project(':automq-hdfs-common') {
   }
 }
 
-project(':automq-table-hdfs') {
-  archivesBaseName = "automq-table-hdfs"
+project(':automq-hdfs-table') {
+  archivesBaseName = "automq-hdfs-table"
 
   checkstyle {
     configProperties = checkstyleConfigProperties("import-control-core.xml")

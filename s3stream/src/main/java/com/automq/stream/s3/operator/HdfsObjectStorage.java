@@ -19,13 +19,13 @@
 
 package com.automq.stream.s3.operator;
 
-import com.automq.hdfs.token.WorkloadIdentityTokenUtil;
+import com.automq.hdfs.common.auth.WorkloadIdentityTokenUtil;
+import com.automq.hdfs.common.webhdfs.AsyncWebHdfsClient;
+import com.automq.hdfs.common.webhdfs.WebHdfsException;
+import com.automq.hdfs.common.webhdfs.WebHdfsProtocol;
 import com.automq.stream.s3.exceptions.ObjectNotExistException;
 import com.automq.stream.s3.metrics.operations.S3Operation;
 import com.automq.stream.s3.network.NetworkBandwidthLimiter;
-import com.automq.stream.s3.webhdfs.AsyncWebHdfsClient;
-import com.automq.stream.s3.webhdfs.WebHdfsException;
-import com.automq.stream.s3.webhdfs.WebHdfsProtocol;
 import com.automq.stream.utils.FutureUtil;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
