@@ -20,6 +20,8 @@
 package com.automq.hdfs.table.io;
 
 import com.automq.stream.s3.webhdfs.WebHdfsClient;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.data.GenericRecord;
@@ -34,7 +36,6 @@ import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SeekableInputStream;
 import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.types.Types;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,9 +51,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
-
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;

@@ -1,8 +1,8 @@
 package com.automq.hdfs.table.auth;
 
 import org.apache.iceberg.rest.HTTPRequest;
-import org.apache.iceberg.rest.ImmutableHTTPRequest;
 import org.apache.iceberg.rest.HTTPRequest.HTTPMethod;
+import org.apache.iceberg.rest.ImmutableHTTPRequest;
 import org.apache.iceberg.rest.auth.AuthManager;
 import org.apache.iceberg.rest.auth.AuthManagers;
 import org.apache.iceberg.rest.auth.AuthSession;

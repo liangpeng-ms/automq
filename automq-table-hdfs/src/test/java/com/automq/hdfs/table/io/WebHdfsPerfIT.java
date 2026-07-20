@@ -21,7 +21,6 @@ package com.automq.hdfs.table.io;
 
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -59,7 +58,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * $env:HDFS_PERF_FILE_MB     = "8"          # size of each written file (MiB)
  * $env:HDFS_PERF_FILES       = "32"         # files written per concurrency level
  * $env:HDFS_PERF_CONCURRENCY = "1,2,4,8,16,32"  # concurrency levels to sweep
- * ./gradlew :core:test --tests kafka.automq.table.io.WebHdfsPerfIT
+ * ./gradlew :automq-table-hdfs:test --tests com.automq.hdfs.table.io.WebHdfsPerfIT
  * </pre>
  */
 @Timeout(1800)
