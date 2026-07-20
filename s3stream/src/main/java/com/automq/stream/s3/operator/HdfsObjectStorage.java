@@ -19,6 +19,7 @@
 
 package com.automq.stream.s3.operator;
 
+import com.automq.hdfs.token.WorkloadIdentityTokenUtil;
 import com.automq.stream.s3.exceptions.ObjectNotExistException;
 import com.automq.stream.s3.metrics.operations.S3Operation;
 import com.automq.stream.s3.network.NetworkBandwidthLimiter;

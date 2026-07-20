@@ -1,4 +1,4 @@
-package com.automq.stream.s3.operator;
+package com.automq.hdfs.token;
 
 import org.junit.jupiter.api.Test;
 

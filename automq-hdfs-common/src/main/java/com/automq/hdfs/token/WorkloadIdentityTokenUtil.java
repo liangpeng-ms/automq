@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-package com.automq.stream.s3.operator;
+package com.automq.hdfs.token;
 
 import org.apache.commons.lang3.StringUtils;
 

@@ -2351,13 +2351,7 @@ project(':s3stream') {
     implementation 'org.hdrhistogram:HdrHistogram:2.2.2'
     implementation 'software.amazon.awssdk.crt:aws-crt:0.30.8'
     implementation 'com.ibm.async:asyncutil:0.1.0'
-    implementation('com.azure:azure-identity:1.18.4') {
-      // azure-core-http-netty pulls reactor-netty + a newer netty than Kafka bundles,
-      // causing NoClassDefFoundError io/netty/resolver/dns/DnsNameResolverChannelStrategy
-      // at runtime. Use the JDK HttpClient provider instead (no netty).
-      exclude group: 'com.azure', module: 'azure-core-http-netty'
-    }
-    implementation 'com.azure:azure-core-http-jdk-httpclient:1.0.4'
+    implementation project(':automq-hdfs-common')
 
     testImplementation 'org.slf4j:slf4j-simple:1.7.36'
     testImplementation libs.junitJupiter
@@ -2368,6 +2362,34 @@ project(':s3stream') {
 
   test {
     jvmArgs '--add-opens=java.base/java.nio=ALL-UNNAMED', '-Dio.netty.tryReflectionSetAccessible=true'
+  }
+}
+
+project(':automq-hdfs-common') {
+  archivesBaseName = "automq-hdfs-common"
+
+  checkstyle {
+    configProperties = checkstyleConfigProperties("import-control-automq.xml")
+  }
+
+  dependencies {
+    implementation libs.jacksonDatabind
+    implementation libs.commonLang
+    implementation('com.azure:azure-identity:1.18.4') {
+      // azure-core-http-netty pulls reactor-netty + a newer netty than Kafka bundles,
+      // causing NoClassDefFoundError io/netty/resolver/dns/DnsNameResolverChannelStrategy
+      // at runtime. Use the JDK HttpClient provider instead (no netty).
+      exclude group: 'com.azure', module: 'azure-core-http-netty'
+    }
+    implementation 'com.azure:azure-core-http-jdk-httpclient:1.0.4'
+
+    testImplementation libs.junitJupiter
+    testImplementation libs.mockitoCore
+    testImplementation libs.mockitoJunitJupiter
+  }
+
+  javadoc {
+    enabled = false
   }
 }
 

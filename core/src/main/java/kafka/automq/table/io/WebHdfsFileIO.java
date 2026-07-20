@@ -19,7 +19,7 @@
 
 package kafka.automq.table.io;
 
-import com.automq.stream.s3.operator.WorkloadIdentityTokenUtil;
+import com.automq.hdfs.token.WorkloadIdentityTokenUtil;
 import com.automq.stream.s3.webhdfs.WebHdfsClient;
 
 import org.apache.iceberg.io.FileIO;

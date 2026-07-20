@@ -17,7 +17,7 @@
  * limitations under the License.
  */
 
-package com.automq.stream.s3.operator;
+package com.automq.hdfs.token;
 
 import com.azure.core.credential.AccessToken;
 import com.azure.core.credential.TokenCredential;

@@ -19,7 +19,7 @@
 
 package kafka.automq.table;
 
-import com.automq.stream.s3.operator.WorkloadIdentityTokenUtil;
+import com.automq.hdfs.token.WorkloadIdentityTokenUtil;
 
 import org.apache.iceberg.rest.HTTPHeaders;
 import org.apache.iceberg.rest.HTTPRequest;
