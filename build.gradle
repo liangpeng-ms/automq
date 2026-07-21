@@ -131,6 +131,19 @@ allprojects {
     maven {
       url = uri("https://packages.confluent.io/maven/")
     }
+    // MT internal feed (production): iceberg-kafka-connect (FicRESTCatalog/DoAsFileIO/FicAuthManager)
+    // and schema-registry-tool. Auth: Entra ID access token as password (MS PAT disabled).
+    maven {
+      url = uri("https://msasg.pkgs.visualstudio.com/b9b38275-a912-4222-a7b7-0b8b968719c0/_packaging/MagneTar-Publish/maven/v1")
+      name = "MagnetarPublish"
+      credentials {
+        username = project.findProperty("MagnetarPublishUsername") ?: "azure"
+        password = project.findProperty("MagnetarPublishPassword") ?: ""
+      }
+      authentication {
+        basic(BasicAuthentication)
+      }
+    }
   }
 
   dependencyUpdates {
@@ -1007,6 +1020,7 @@ project(':core') {
     implementation libs.commonLang
     implementation libs.nettyHttp2
     implementation project(':s3stream')
+    implementation project(':automq-hdfs-table')
     implementation libs.guava
     implementation libs.slf4jBridge
     implementation libs.slf4jReload4j
@@ -1026,6 +1040,16 @@ project(':core') {
     implementation ("org.apache.iceberg:iceberg-common:${versions.iceberg}")
     implementation ("org.apache.iceberg:iceberg-aws:${versions.iceberg}")
     implementation ("org.apache.iceberg:iceberg-nessie:${versions.iceberg}")
+    // MT internal: FicRESTCatalog + DoAsFileIO + FicAuthManager (Unity Catalog + HDFS AAD/FIC auth).
+    // The MT Gradle module metadata pins transitive iceberg-kafka-connect-events to the MT version,
+    // which is not published (only public 1.10.1 exists); exclude it and add the public one explicitly.
+    implementation ("org.apache.iceberg:iceberg-kafka-connect:1.10.1-MT-20260609-2") {
+      exclude group: 'org.apache.iceberg', module: 'iceberg-kafka-connect-events'
+    }
+    implementation ("org.apache.iceberg:iceberg-kafka-connect-events:${versions.iceberg}")
+    // MT internal: official Confluent BearerAuthCredentialProvider SPI impls (WORKLOAD_IDENTITY etc.)
+    // for Schema Registry bearer auth (com.microsoft.magnetar.schema.registry.tool.*).
+    implementation ("com.microsoft.magnetar.kafka:schema-registry-tool:1.0.3")
     implementation ("software.amazon.awssdk:glue:${versions.awsSdk}")
     implementation ("software.amazon.awssdk:s3tables:${versions.awsSdk}")
     implementation 'software.amazon.s3tables:s3-tables-catalog-for-iceberg:0.1.8'
@@ -1043,7 +1067,7 @@ project(':core') {
     }
 
     // > hive ext start
-    implementation 'org.apache.iceberg:iceberg-hive-metastore:1.6.1'
+    implementation "org.apache.iceberg:iceberg-hive-metastore:${versions.iceberg}"
     implementation('org.apache.hive:hive-metastore:3.1.3') {
       // Remove useless dependencies (copy from iceberg-kafka-connect)
       exclude group: "org.apache.avro", module: "avro"
@@ -1120,6 +1144,11 @@ project(':core') {
     testImplementation libs.slf4jReload4j
     testImplementation libs.caffeine
     testImplementation libs.commonMath3
+    // Expose Parquet's MessageType on the test compile classpath (iceberg-parquet pulls it in transitively at
+    // runtime only) so tests can drive the real Iceberg Parquet writer/reader, e.g. WebHdfsFileIOTest.
+    // Must match the Parquet version Iceberg 1.10 uses (1.16.0); an older pin downgrades the runtime jar and
+    // breaks on classes like LogicalTypeAnnotation$VariantLogicalTypeAnnotation.
+    testImplementation 'org.apache.parquet:parquet-column:1.16.0'
     testRuntimeOnly libs.junitPlatformLanucher
   }
 
@@ -2332,6 +2361,7 @@ project(':s3stream') {
     implementation 'org.hdrhistogram:HdrHistogram:2.2.2'
     implementation 'software.amazon.awssdk.crt:aws-crt:0.30.8'
     implementation 'com.ibm.async:asyncutil:0.1.0'
+    implementation project(':automq-hdfs-common')
 
     testImplementation 'org.slf4j:slf4j-simple:1.7.36'
     testImplementation libs.junitJupiter
@@ -2342,6 +2372,75 @@ project(':s3stream') {
 
   test {
     jvmArgs '--add-opens=java.base/java.nio=ALL-UNNAMED', '-Dio.netty.tryReflectionSetAccessible=true'
+  }
+}
+
+project(':automq-hdfs-common') {
+  archivesBaseName = "automq-hdfs-common"
+
+  checkstyle {
+    configProperties = checkstyleConfigProperties("import-control-automq.xml")
+  }
+
+  dependencies {
+    implementation libs.jacksonDatabind
+    implementation libs.commonLang
+    implementation('com.azure:azure-identity:1.18.4') {
+      // azure-core-http-netty pulls reactor-netty + a newer netty than Kafka bundles,
+      // causing NoClassDefFoundError io/netty/resolver/dns/DnsNameResolverChannelStrategy
+      // at runtime. Use the JDK HttpClient provider instead (no netty).
+      exclude group: 'com.azure', module: 'azure-core-http-netty'
+    }
+    implementation 'com.azure:azure-core-http-jdk-httpclient:1.0.4'
+
+    testImplementation libs.junitJupiter
+    testImplementation libs.mockitoCore
+    testImplementation libs.mockitoJunitJupiter
+  }
+
+  javadoc {
+    enabled = false
+  }
+}
+
+project(':automq-hdfs-table') {
+  archivesBaseName = "automq-hdfs-table"
+
+  checkstyle {
+    configProperties = checkstyleConfigProperties("import-control-core.xml")
+  }
+
+  dependencies {
+    implementation project(':automq-hdfs-common')
+    implementation ("org.apache.iceberg:iceberg-api:${versions.iceberg}")
+    implementation ("org.apache.iceberg:iceberg-core:${versions.iceberg}")
+
+    testImplementation ("org.apache.iceberg:iceberg-data:${versions.iceberg}")
+    testImplementation ("org.apache.iceberg:iceberg-parquet:${versions.iceberg}")
+    // Expose Parquet's MessageType on the test compile classpath (iceberg-parquet pulls it in transitively at
+    // runtime only) so tests can drive the real Iceberg Parquet writer/reader, e.g. WebHdfsFileIOTest.
+    // Must match the Parquet version Iceberg 1.10 uses (1.16.0).
+    testImplementation 'org.apache.parquet:parquet-column:1.16.0'
+    // Iceberg's Parquet WriteBuilder needs org.apache.hadoop.conf.Configuration at runtime; the FileIO itself is
+    // Hadoop-free, so this is test-only (WebHdfsFileIOTest drives the real Iceberg Parquet writer/reader).
+    testImplementation ('org.apache.hadoop:hadoop-common:3.4.1') {
+      exclude group: 'org.eclipse.jetty', module: '*'
+      exclude group: 'com.sun.jersey', module: '*'
+      exclude group: 'com.github.pjfanning', module: 'jersey-json'
+    }
+    // Parquet's ParquetReadOptions references hadoop-mapreduce FileInputFormat; test-only, same reason as above.
+    testImplementation ('org.apache.hadoop:hadoop-mapreduce-client-core:3.4.1') {
+      exclude group: 'com.sun.jersey', module: '*'
+      exclude group: 'com.sun.jersey.contribs', module: '*'
+      exclude group: 'com.github.pjfanning', module: 'jersey-json'
+    }
+    testImplementation libs.junitJupiter
+    testImplementation libs.mockitoCore
+    testImplementation libs.mockitoJunitJupiter
+  }
+
+  javadoc {
+    enabled = false
   }
 }
 

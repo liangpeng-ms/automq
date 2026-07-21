@@ -68,6 +68,6 @@ bin/
 !/bin/
 release/.venv/
 
-# Claude Code project config
-.claude/settings.local.json
-.claude/plans/
+# Local Claude Code tooling config
+.claude/
+docs/superpowers/

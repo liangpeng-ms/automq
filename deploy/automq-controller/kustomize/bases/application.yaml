@@ -1,0 +1,199 @@
+# AutoMQ STATIC-quorum CONTROLLER tier (dedicated controllers, metadata only).
+#
+# The CONTROLLER half of the separated topology. Deploy together with
+# automq-broker-rongyu (the BROKER half). Same-cluster deployment.
+#
+# Topology: 3 dedicated controllers (process.roles=controller).
+#   node.id = 200000 + pod ordinal  -> 200000 / 200001 / 200002
+#   These 3 ARE the entire controller.quorum.voters set (STATIC roster). The
+#   roster is built by the container command from the StatefulSet's stable
+#   per-pod DNS and is IDENTICAL on every controller AND every broker.
+#
+# Static-quorum notes (this image does NOT support KIP-853 dynamic quorum):
+#   - Controller COUNT is fixed at deploy time. Changing 3 -> 5 means editing
+#     this roster (replicas + the voters list) and rolling all pods.
+#   - Controller REPLACEMENT is automatic: a pod keeps its ordinal (hence its
+#     node.id and DNS name) across restarts, so the roster never changes.
+#   - podManagementPolicy: Parallel so all 3 controllers start at once and can
+#     form the quorum (OrderedReady would deadlock: pod-0 alone can't elect a
+#     leader of a 3-voter quorum).
+apiVersion: apis.clusterfleet.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+  labels:
+    microsoft-falcon.net/workload-state: stateful
+  name: automq-controller-rongyu
+  namespace: magnetar-test
+spec:
+  priorityClassName: prod
+  rollbackStrategy:
+    minReadyReplicas: 0
+    minReadySeconds: 0
+    progressDeadlineSeconds: 0
+    revisionHistoryLimit: 5
+  rolloutStrategy:
+    minAvailableReplicas: 100%
+  version: '20260624.2'
+  workload:
+    - manifest:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: automq-controller-rongyu
+          namespace: magnetar-test
+        spec:
+          clusterIP: None
+          ports:
+            - name: controller
+              port: 9093
+              protocol: TCP
+              targetPort: controller
+            - name: metrics
+              port: 9090
+              protocol: TCP
+              targetPort: metrics
+          publishNotReadyAddresses: true
+          selector:
+            app.kubernetes.io/component: service
+            app.kubernetes.io/instance: magnetar-test.automq-controller-rongyu
+          type: ClusterIP
+    - manifest:
+        apiVersion: apps/v1
+        kind: StatefulSet
+        metadata:
+          labels:
+            app.kubernetes.io/component: service
+            app.kubernetes.io/instance: magnetar-test.automq-controller-rongyu
+          name: automq-controller-rongyu
+          namespace: magnetar-test
+        spec:
+          replicas: 1
+          podManagementPolicy: Parallel
+          selector:
+            matchLabels:
+              app.kubernetes.io/component: service
+              app.kubernetes.io/instance: magnetar-test.automq-controller-rongyu
+          serviceName: automq-controller-rongyu
+          template:
+            metadata:
+              annotations:
+                prometheus.io/path: /metrics
+                prometheus.io/port: '9090'
+                prometheus.io/scrape: 'true'
+              labels:
+                app.kubernetes.io/component: service
+                app.kubernetes.io/instance: magnetar-test.automq-controller-rongyu
+                azure.workload.identity/use: 'true'
+            spec:
+              serviceAccountName: falconfleet-magnetar-test-sa
+              containers:
+                - command:
+                    - bash
+                    - '-c'
+                    - >
+                      set -euo pipefail
+
+                      ORD="${HOSTNAME##*-}"
+
+                      NODE_ID="$((200000 + ORD))"
+
+
+                      # Single-controller CROSS-CLUSTER quorum. With exactly 1
+                      voter, the voter host may be a Service-level MCS address
+                      (clusterset.local, load-balanced) instead of a per-pod
+                      name -- there is only one controller pod behind it, so no
+                      per-id routing ambiguity. This is what lets a single
+                      controller be reached from OTHER clusters (per-pod
+                      cluster.local names are NOT exported cross-cluster).
+                      node.id 200000 = ordinal 0; this single entry IS the whole
+                      voter set. IDENTICAL on the controller AND every broker.
+
+                      SVC="automq-controller-rongyu"
+
+                      VOTERS="200000@${SVC}.${POD_NAMESPACE}.svc.clusterset.local:9093"
+
+
+                      exec /opt/automq/scripts/start.sh up
+                      --process.roles controller
+                      --node.id "$NODE_ID"
+                      --controller.quorum.voters "$VOTERS"
+                      --cluster.id OB_fAKFJOMYdbIqpoJ6eSQ
+                      --s3.bucket dummy
+                      --s3.endpoint http://dummy
+                      --s3.region us-east-1
+                  env:
+                    - name: KAFKA_CFG_S3_DATA_BUCKETS
+                      value: >-
+                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/rongyu/test/falcon/data
+                    - name: KAFKA_CFG_S3_OPS_BUCKETS
+                      value: >-
+                        0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/rongyu/test/falcon/data
+                    - name: KAFKA_CFG_S3_WAL_PATH
+                      value: >-
+                        -3@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/rongyu/test/falcon/wal
+                    - name: HDFS_TOKEN_SCOPE
+                      value: api://1c0b8c88-563f-4b97-abdf-207172a50d2c/.default
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+                    - name: KAFKA_CFG_LOG_DIRS
+                      value: /tmp/kraft-controller-logs
+                    - name: KAFKA_CFG_ELASTICSTREAM_ENABLE
+                      value: 'true'
+                    - name: KAFKA_CFG_S3_STREAM_ALLOCATOR_POLICY
+                      value: POOLED_DIRECT
+                    - name: KAFKA_CFG_S3_TELEMETRY_METRICS_EXPORTER_URI
+                      value: prometheus://?host=0.0.0.0&port=9090
+                    - name: KAFKA_HEAP_OPTS
+                      value: >-
+                        -Xms1g -Xmx2g -XX:MetaspaceSize=96m
+                    - name: POD__ID
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.name
+                  image: msbingmtcr.azurecr.io/rongyu/automq:test0712sr
+                  imagePullPolicy: Always
+                  livenessProbe:
+                    failureThreshold: 12
+                    initialDelaySeconds: 120
+                    periodSeconds: 20
+                    tcpSocket:
+                      port: controller
+                    timeoutSeconds: 10
+                  name: automq-controller-rongyu
+                  ports:
+                    - containerPort: 9093
+                      name: controller
+                      protocol: TCP
+                    - containerPort: 9090
+                      name: metrics
+                      protocol: TCP
+                  readinessProbe:
+                    failureThreshold: 6
+                    initialDelaySeconds: 20
+                    periodSeconds: 15
+                    tcpSocket:
+                      port: controller
+                    timeoutSeconds: 5
+                  resources:
+                    limits:
+                      cpu: 2000m
+                      memory: 6G
+                    requests:
+                      cpu: 2000m
+                      memory: 6G
+              nodeSelector:
+                kubernetes.azure.com/mode: user
+                kubernetes.io/os: linux
+                microsoft-falcon.net/ap-connectivity: ipv4regional
+                microsoft-falcon.net/cloud: azure
+                microsoft-falcon.net/cross-region-connectivity: regional
+                microsoft-falcon.net/use-case: generic
+                scheduler.clusterfleet.io/ready: 'true'
+              priorityClassName: prod

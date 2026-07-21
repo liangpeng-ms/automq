@@ -44,6 +44,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import io.confluent.kafka.schemaregistry.avro.AvroSchemaProvider;
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
+import io.confluent.kafka.schemaregistry.client.rest.RestService;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 
@@ -51,7 +52,6 @@ public class ConverterFactory {
     private static final Logger LOGGER = LoggerFactory.getLogger(ConverterFactory.class);
 
     private static final String VALUE_SUFFIX = "-value";
-    private static final String KEY_SUFFIX = "-key";
     private static final String PROTOBUF_TYPE = "PROTOBUF";
     private static final Duration CACHE_EXPIRE_DURATION = Duration.ofMinutes(20);
     private static final int MAX_CACHE_SIZE = 10000;
@@ -71,11 +71,18 @@ public class ConverterFactory {
     public ConverterFactory(String registryUrl, Map<String, ?> schemaRegistryClientConfigs) {
         this.schemaRegistryUrl = registryUrl;
         if (registryUrl != null && !registryUrl.trim().isEmpty()) {
+            Map<String, ?> configs = Objects.requireNonNullElse(schemaRegistryClientConfigs, Map.of());
+            RestService restService = new RestService(registryUrl);
+            // Custom static headers (e.g. a gateway 'subcluster' routing header) must be injected via the httpHeaders
+            // constructor parameter: RestService.configure(...) ignores request.header.* and only sends headers set
+            // through setHttpHeaders(...). Bearer auth (including Workload Identity) is resolved by the Confluent client
+            // through the BearerAuthCredentialProvider SPI (schema-registry-tool jar) via bearer.auth.credentials.source.
             this.client = new CachedSchemaRegistryClient(
-                registryUrl,
+                restService,
                 AbstractKafkaSchemaSerDeConfig.MAX_SCHEMAS_PER_SUBJECT_DEFAULT,
                 List.of(new AvroSchemaProvider(), new ProtobufSchemaProvider()),
-                Objects.requireNonNullElse(schemaRegistryClientConfigs, Map.of())
+                configs,
+                ConfluentSchemaRegistry.extractHttpHeaders(configs)
             );
         } else {
             this.client = null;
@@ -136,12 +143,11 @@ public class ConverterFactory {
             throw new IllegalArgumentException("Topic cannot be null or empty");
         }
 
-        return new LazyConverter(() -> {
-            String subject = getSubjectName(topic, isKey);
-            String schemaType = getSchemaType(subject);
-            SchemaFormat format = SchemaFormat.fromString(schemaType);
-            return converterCache.computeIfAbsent(format.name(), format1 -> createConverterForFormat(format1, isKey));
-        });
+        // Resolve the concrete format (Avro/Protobuf) from the schema id embedded in each record (magic byte + id)
+        // via /schemas/ids/{id}, instead of a subject-name lookup. Some Schema Registries only authorize by-id reads,
+        // so a subject lookup (getLatestSchemaMetadata) would be rejected even though by_schema_id conversion works.
+        return new ConfluentSchemaRegistry.SchemaIdConverter(client,
+            format -> converterCache.computeIfAbsent(format, f -> createConverterForFormat(f, isKey)));
     }
 
     public Converter createForSubjectName(String topic, String subjectName, String messageFullName, boolean isKey) {
@@ -190,10 +196,6 @@ public class ConverterFactory {
 
     private String getSubjectName(String topic) {
         return topic + VALUE_SUFFIX;
-    }
-
-    private String getSubjectName(String topic, boolean isKey) {
-        return topic + (isKey ? KEY_SUFFIX : VALUE_SUFFIX);
     }
 
     private Converter createConverterForFormat(String format, boolean isKey) {
