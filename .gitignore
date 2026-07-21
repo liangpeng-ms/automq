@@ -70,3 +70,4 @@ bin/
 
 # Local Claude Code tooling config
 .claude/
+docs/superpowers/
