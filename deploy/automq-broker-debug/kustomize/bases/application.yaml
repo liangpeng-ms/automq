@@ -1,17 +1,18 @@
-# AutoMQ STATIC-quorum BROKER tier (dedicated brokers, data plane).
+# AutoMQ STATIC-quorum BROKER tier -- DEBUG variant.
 #
-# The BROKER half of the separated topology. Deploy together with
-# automq-controller-rongyu (the CONTROLLER half). Same-cluster deployment.
+# IDENTICAL to deploy/automq-broker's application.yaml EXCEPT the container
+# command does NOT 'exec' start.sh: it runs start.sh, captures the exit code,
+# prints it, then holds the container Running with 'sleep infinity'. This keeps
+# a crashed broker pod alive so server.log can be read via `kubectl exec`
+# (a crash-looping pod can't be exec'd into). Use ONLY for debugging a startup
+# crash, never in production.
 #
-# Topology: brokers (process.roles=broker), scale this freely.
-#   node.id = 100000 + pod ordinal  -> 100000 / 100001 / 100002 / ...
-#   Brokers are NOT voters. controller.quorum.voters points at the 3 dedicated
-#   controllers (200000/200001/200002) by their stable per-pod DNS -- the SAME
-#   static roster the controllers use. Adding a broker never touches the quorum.
-#
-# Table Topic / Schema Registry config is appended to broker.properties (in
-# broker-only role start.sh 'up' launches broker.properties); start.sh 'up' only
-# parses a fixed set of --flags, so extra config must go via the properties file.
+# This is a SEPARATE deploy tree (deploy/automq-broker-debug) with the SAME
+# Application name/namespace as deploy/automq-broker, so applying it REPLACES the
+# normal broker workload with the debug one. Deploy with:
+#   kubectl apply -k deploy/automq-broker-debug/kustomize/magnetar-test
+# and switch back with:
+#   kubectl apply -k deploy/automq-broker/kustomize/magnetar-test
 apiVersion: apis.clusterfleet.io/v1alpha1
 kind: Application
 metadata:
@@ -111,7 +112,14 @@ spec:
 
                       printf '%s\n' 'automq.table.topic.catalog.type=rest' 'automq.table.topic.catalog.uri=https://api.magnetar.binginternal.com/unity-catalog/api/2.1/unity-catalog/iceberg' 'automq.table.topic.catalog.warehouse=test_catalog1' 'automq.table.topic.catalog.io-impl=com.automq.hdfs.table.io.WebHdfsFileIO' 'automq.table.topic.catalog.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.url=https://api.magnetar.binginternal.com/schema-registry' 'automq.table.topic.schema.registry.config.bearer.auth.credentials.source=WORKLOAD_IDENTITY' 'automq.table.topic.schema.registry.config.credential.provider.scope=api://1c0b8c88-563f-4b97-abdf-207172a50d2c/.default' 'automq.table.topic.schema.registry.config.request.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.config.auto.register.schemas=false' >> /opt/automq/kafka/config/kraft/broker.properties
 
-                      exec /opt/automq/scripts/start.sh up
+                      # DEBUG: no 'exec' so the shell survives a start.sh crash;
+                      # on exit we print the code and hold the container Running
+                      # (sleep infinity) so server.log can be read via kubectl exec.
+                      # Swap back to application.yaml (exec ...) once fixed.
+
+                      RC=0
+
+                      /opt/automq/scripts/start.sh up
                       --process.roles broker
                       --node.id "$NODE_ID"
                       --controller.quorum.voters "$VOTERS"
@@ -119,6 +127,11 @@ spec:
                       --s3.bucket dummy
                       --s3.endpoint http://dummy
                       --s3.region us-east-1
+                      || RC=$?
+
+                      echo "=== start.sh exited with code $RC ; holding container for debug (sleep infinity) ==="
+
+                      sleep infinity
                   env:
                     - name: KAFKA_CFG_S3_DATA_BUCKETS
                       value: >-
