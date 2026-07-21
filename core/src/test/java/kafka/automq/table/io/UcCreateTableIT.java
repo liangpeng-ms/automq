@@ -19,8 +19,6 @@
 
 package kafka.automq.table.io;
 
-import kafka.automq.table.WorkloadIdentityRESTCatalog;
-
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.catalog.Namespace;
@@ -30,7 +28,6 @@ import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.types.Types;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -75,12 +72,13 @@ public class UcCreateTableIT {
         Map<String, String> props = new HashMap<>();
         props.put(CatalogProperties.URI, uri);
         props.put(CatalogProperties.WAREHOUSE_LOCATION, warehouse);
-        props.put(CatalogProperties.FILE_IO_IMPL, "kafka.automq.table.io.WebHdfsFileIO");
+        props.put(CatalogProperties.FILE_IO_IMPL, "com.automq.hdfs.table.io.WebHdfsFileIO");
         props.put("header.subcluster", subcluster);
         props.put("rest.client.connection-timeout-ms", "30000");
         props.put("rest.client.socket-timeout-ms", "120000");
+        props.put("rest.auth.type", "com.automq.hdfs.table.auth.WorkloadIdentityAuthManager");
 
-        RESTCatalog catalog = new WorkloadIdentityRESTCatalog();
+        RESTCatalog catalog = new RESTCatalog();
         catalog.initialize("uc", props);
         try {
             TableIdentifier id = TableIdentifier.of(Namespace.of(namespace), table);

@@ -52,7 +52,6 @@ import org.apache.iceberg.io.TaskWriter;
 import org.apache.iceberg.io.UnpartitionedWriter;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.DateTimeUtil;
-import org.apache.iceberg.util.UUIDUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockitoAnnotations;
@@ -337,7 +336,7 @@ public class AvroRecordBinderTypeTest {
         assertFieldRoundTrips("UUID", "uuidField",
             () -> LogicalTypes.uuid().addToSchema(Schema.create(Schema.Type.STRING)),
             schema -> new Conversions.UUIDConversion().toCharSequence(uuid, schema, LogicalTypes.uuid()),
-            value -> assertEquals(uuid, UUIDUtil.convert((byte[]) value))
+            value -> assertEquals(uuid, value)
         );
     }
 

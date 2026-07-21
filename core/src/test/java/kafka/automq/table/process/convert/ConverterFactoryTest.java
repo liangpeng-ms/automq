@@ -26,10 +26,8 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -37,9 +35,9 @@ class ConverterFactoryTest {
 
     @Test
     void extractHttpHeadersReturnsNullWhenNoHeaderConfigs() {
-        assertNull(ConverterFactory.extractHttpHeaders(null));
-        assertNull(ConverterFactory.extractHttpHeaders(Map.of()));
-        assertNull(ConverterFactory.extractHttpHeaders(Map.of(
+        assertNull(ConfluentSchemaRegistry.extractHttpHeaders(null));
+        assertNull(ConfluentSchemaRegistry.extractHttpHeaders(Map.of()));
+        assertNull(ConfluentSchemaRegistry.extractHttpHeaders(Map.of(
             "schema.registry.bearer.auth.credentials.source", "FEDERATED_MANAGED_IDENTITY",
             "schema.registry.auto.register.schemas", "false")));
     }
@@ -54,7 +52,7 @@ class ConverterFactoryTest {
         // Non-header configs must be ignored (they flow through configure(...) instead).
         configs.put("schema.registry.bearer.auth.credentials.source", "FEDERATED_MANAGED_IDENTITY");
 
-        Map<String, String> headers = ConverterFactory.extractHttpHeaders(configs);
+        Map<String, String> headers = ConfluentSchemaRegistry.extractHttpHeaders(configs);
 
         assertEquals(2, headers.size());
         assertEquals("AKS-NorthEurope-FLEET", headers.get("subcluster"));
@@ -67,26 +65,7 @@ class ConverterFactoryTest {
         configs.put("schema.registry.request.header.subcluster", null);
         configs.put("schema.registry.request.header.", "no-name");
 
-        assertNull(ConverterFactory.extractHttpHeaders(configs));
-    }
-
-    @Test
-    void workloadIdentityTokenSupplierNullWhenSourceIsNotWorkloadIdentity() {
-        assertNull(ConverterFactory.workloadIdentityTokenSupplier(Map.of()));
-        assertNull(ConverterFactory.workloadIdentityTokenSupplier(Map.of(
-            "bearer.auth.credentials.source", "STATIC_TOKEN")));
-    }
-
-    @Test
-    void workloadIdentityTokenSupplierUsesStaticTokenTierAndNamespacedKeys() {
-        Map<String, Object> configs = new HashMap<>();
-        configs.put("schema.registry.bearer.auth.credentials.source", "workload_identity");
-        configs.put("schema.registry.bearer.auth.token", "static-abc");
-
-        Supplier<String> supplier = ConverterFactory.workloadIdentityTokenSupplier(configs);
-
-        assertNotNull(supplier);
-        assertEquals("static-abc", supplier.get());
+        assertNull(ConfluentSchemaRegistry.extractHttpHeaders(configs));
     }
 
     @Test
@@ -97,7 +76,7 @@ class ConverterFactoryTest {
         buffer.putInt(0x01020304);   // payload
         buffer.flip();
 
-        assertEquals(68, ConverterFactory.readSchemaId(buffer));
+        assertEquals(68, ConfluentSchemaRegistry.readSchemaId(buffer));
         // The reader must not advance the caller's buffer position.
         assertEquals(0, buffer.position());
         assertEquals(9, buffer.remaining());
@@ -109,12 +88,12 @@ class ConverterFactoryTest {
         badMagic.put((byte) 0x1);
         badMagic.putInt(68);
         badMagic.flip();
-        assertThrows(InvalidDataException.class, () -> ConverterFactory.readSchemaId(badMagic));
+        assertThrows(InvalidDataException.class, () -> ConfluentSchemaRegistry.readSchemaId(badMagic));
 
         ByteBuffer tooShort = ByteBuffer.allocate(3);
         tooShort.flip();
-        assertThrows(InvalidDataException.class, () -> ConverterFactory.readSchemaId(tooShort));
+        assertThrows(InvalidDataException.class, () -> ConfluentSchemaRegistry.readSchemaId(tooShort));
 
-        assertThrows(InvalidDataException.class, () -> ConverterFactory.readSchemaId(null));
+        assertThrows(InvalidDataException.class, () -> ConfluentSchemaRegistry.readSchemaId(null));
     }
 }

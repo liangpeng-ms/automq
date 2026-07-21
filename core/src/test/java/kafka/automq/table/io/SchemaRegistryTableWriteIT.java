@@ -19,7 +19,6 @@
 
 package kafka.automq.table.io;
 
-import kafka.automq.table.WorkloadIdentityRESTCatalog;
 import kafka.automq.table.binder.RecordBinder;
 import kafka.automq.table.process.DefaultRecordProcessor;
 import kafka.automq.table.process.ProcessingResult;
@@ -47,7 +46,7 @@ import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.DataWriter;
 import org.apache.iceberg.io.OutputFileFactory;
-
+import org.apache.iceberg.rest.RESTCatalog;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -78,8 +77,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Full-stack live smoke test tying together every piece of the table-topic Lakehouse path with a real registered
  * schema: it resolves an Avro schema by id from the real MT Schema Registry ({@code convert.value.type=by_schema_id}),
  * runs the production convert + flatten pipeline to a strongly-typed record, derives the Iceberg schema via
- * {@link RecordBinder}, creates a table in Unity Catalog through {@link WorkloadIdentityRESTCatalog}, writes the typed
- * rows as Parquet to real MT HDFS through {@link WebHdfsFileIO}, commits, and reads them back with typed columns.
+ * {@link RecordBinder}, creates a table in Unity Catalog through a stock {@link RESTCatalog} authenticated by
+ * {@code com.automq.hdfs.table.auth.WorkloadIdentityAuthManager}, writes the typed
+ * rows as Parquet to real MT HDFS through {@code WebHdfsFileIO}, commits, and reads them back with typed columns.
  *
  * <p>Disabled unless {@code AAD_TOKEN} and {@code SR_TABLE_SMOKE=true} are set. Optional env: {@code SR_URL},
  * {@code SR_SUBCLUSTER}, {@code SR_SCHEMA_ID} (default 68), {@code UC_URI}, {@code UC_WAREHOUSE}, {@code UC_NAMESPACE},
@@ -103,7 +103,7 @@ public class SchemaRegistryTableWriteIT {
     private static final int DEFAULT_SCHEMA_ID = 68;
     private static final int ROWS = 20;
 
-    private WorkloadIdentityRESTCatalog catalog;
+    private RESTCatalog catalog;
     private TableIdentifier tableId;
 
     @BeforeEach
@@ -115,12 +115,13 @@ public class SchemaRegistryTableWriteIT {
         Map<String, String> props = new HashMap<>();
         props.put(CatalogProperties.URI, uri);
         props.put(CatalogProperties.WAREHOUSE_LOCATION, warehouse);
-        props.put(CatalogProperties.FILE_IO_IMPL, "kafka.automq.table.io.WebHdfsFileIO");
+        props.put(CatalogProperties.FILE_IO_IMPL, "com.automq.hdfs.table.io.WebHdfsFileIO");
         props.put("header.subcluster", subcluster);
         props.put("rest.client.connection-timeout-ms", "30000");
         props.put("rest.client.socket-timeout-ms", "120000");
+        props.put("rest.auth.type", "com.automq.hdfs.table.auth.WorkloadIdentityAuthManager");
 
-        catalog = new WorkloadIdentityRESTCatalog();
+        catalog = new RESTCatalog();
         catalog.initialize("uc", props);
     }
 
