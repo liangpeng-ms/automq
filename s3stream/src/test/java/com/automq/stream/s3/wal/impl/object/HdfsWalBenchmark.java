@@ -19,6 +19,7 @@
 
 package com.automq.stream.s3.wal.impl.object;
 
+import com.automq.stream.s3.DefaultByteBufSupplier;
 import com.automq.stream.s3.model.StreamRecordBatch;
 import com.automq.stream.s3.operator.BucketURI;
 import com.automq.stream.s3.operator.HdfsObjectStorage;
@@ -177,7 +178,7 @@ public class HdfsWalBenchmark {
         // Warmup a few appends.
         List<CompletableFuture<AppendResult>> warmup = new ArrayList<>();
         for (int i = 0; i < 20; i++) {
-            warmup.add(wal.append(TraceContext.DEFAULT, StreamRecordBatch.of(1L, 0, i, 1, payload(recordSize))));
+            warmup.add(wal.append(TraceContext.DEFAULT, StreamRecordBatch.of(1L, 0, i, 1, payload(recordSize), DefaultByteBufSupplier.INSTANCE)));
         }
         CompletableFuture.allOf(warmup.toArray(new CompletableFuture[0])).get(120, TimeUnit.SECONDS);
 
@@ -188,7 +189,7 @@ public class HdfsWalBenchmark {
             final int idx = i;
             long submit = System.nanoTime();
             CompletableFuture<AppendResult> cf = wal.append(TraceContext.DEFAULT,
-                StreamRecordBatch.of(1L, 0, 100L + i, 1, payload(recordSize)));
+                StreamRecordBatch.of(1L, 0, 100L + i, 1, payload(recordSize), DefaultByteBufSupplier.INSTANCE));
             cf.whenComplete((r, e) -> latencies[idx] = System.nanoTime() - submit);
             futures.add(cf);
         }
@@ -264,7 +265,7 @@ public class HdfsWalBenchmark {
 
         List<CompletableFuture<AppendResult>> warmup = new ArrayList<>();
         for (int i = 0; i < 20; i++) {
-            warmup.add(wal.append(TraceContext.DEFAULT, StreamRecordBatch.of(1L, 0, i, 1, payload(recordSize))));
+            warmup.add(wal.append(TraceContext.DEFAULT, StreamRecordBatch.of(1L, 0, i, 1, payload(recordSize), DefaultByteBufSupplier.INSTANCE)));
         }
         CompletableFuture.allOf(warmup.toArray(new CompletableFuture[0])).get(120, TimeUnit.SECONDS);
 
@@ -282,7 +283,7 @@ public class HdfsWalBenchmark {
             final int idx = i;
             long submit = System.nanoTime();
             CompletableFuture<AppendResult> cf = wal.append(TraceContext.DEFAULT,
-                StreamRecordBatch.of(1L, 0, 200L + i, 1, payload(recordSize)));
+                StreamRecordBatch.of(1L, 0, 200L + i, 1, payload(recordSize), DefaultByteBufSupplier.INSTANCE));
             cf.whenComplete((r, e) -> latencies[idx] = System.nanoTime() - submit);
             futures.add(cf);
         }

@@ -19,6 +19,7 @@
 
 package com.automq.stream.s3.wal.impl.object;
 
+import com.automq.stream.s3.DefaultByteBufSupplier;
 import com.automq.stream.s3.model.StreamRecordBatch;
 import com.automq.stream.s3.operator.BucketURI;
 import com.automq.stream.s3.operator.HdfsObjectStorage;
@@ -106,7 +107,7 @@ public class HdfsWalIT {
         List<AppendResult> appended = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
             appended.add(wal.append(TraceContext.DEFAULT,
-                StreamRecordBatch.of(STREAM_ID, 10, 100L + i, 1, randomBuf(256))).get());
+                StreamRecordBatch.of(STREAM_ID, 10, 100L + i, 1, randomBuf(256), DefaultByteBufSupplier.INSTANCE)).get());
         }
         ((DefaultWriter) wal.writer).flush().join();
 
@@ -131,7 +132,7 @@ public class HdfsWalIT {
         List<AppendResult> appended = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
             appended.add(wal0.append(TraceContext.DEFAULT,
-                StreamRecordBatch.of(STREAM_ID, 10, 100L + i, 1, randomBuf(256))).get());
+                StreamRecordBatch.of(STREAM_ID, 10, 100L + i, 1, randomBuf(256), DefaultByteBufSupplier.INSTANCE)).get());
         }
         ((DefaultWriter) wal0.writer).flush().join();
         wal0.trim(appended.get(4).recordOffset()).get();
