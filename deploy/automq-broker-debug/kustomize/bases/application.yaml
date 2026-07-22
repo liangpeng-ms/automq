@@ -90,49 +90,81 @@ spec:
                     - >
                       set -euo pipefail
 
+
+                      # Per-pod identity from the StatefulSet ordinal
+                      (HOSTNAME = automq-broker-rongyu-<N>). node.id = 100000+ordinal,
+                      kept out of the controllers' 0..N and the seed's 100 range.
+                      Brokers are NOT voters -- they only DISCOVER the quorum via
+                      controller.quorum.bootstrap.servers (a DYNAMIC quorum has no
+                      fixed voter roster to hardcode).
+
                       ORD="${HOSTNAME##*-}"
 
-                      NODE_ID="$((100000 + ORD))"
+                      export KAFKA_CFG_NODE_ID="$((100000 + ORD))"
+
+                      export KAFKA_CFG_ADVERTISED_LISTENERS="PLAINTEXT://$POD_IP:9092"
 
 
-                      # Single dedicated controller, reached CROSS-CLUSTER via
-                      its Service-level MCS address (clusterset.local, no per-pod
-                      ordinal -- per-pod cluster.local names are not exported
-                      across clusters). node id 200000 is the whole voter set,
-                      IDENTICAL to what the controller uses. Brokers are NOT voters.
+                      # Render broker.properties from every KAFKA_CFG_* env var
+                      # (drop KAFKA_CFG_ prefix, lowercase, '_' -> '.').
 
-                      CSVC="automq-controller-rongyu"
+                      CONFIG_FILE=/opt/automq/kafka/config/kraft/broker.properties
 
-                      VOTERS="200000@${CSVC}.${POD_NAMESPACE}.svc.clusterset.local:9093"
+                      : > "$CONFIG_FILE"
+
+                      for var in ${!KAFKA_CFG_@}; do
+                        key=$(printf '%s' "${var#KAFKA_CFG_}" | tr 'A-Z_' 'a-z.')
+                        printf '%s=%s\n' "$key" "${!var}" >> "$CONFIG_FILE"
+                      done
 
 
-                      # Table Topic catalog config appended to broker.properties
-                      (broker-only role launches broker.properties). Uses the new
-                      HDFS FileIO FQN.
+                      # Table Topic catalog / Schema Registry config. Appended
+                      directly (NOT via KAFKA_CFG_*) because keys contain '-'
+                      (e.g. catalog.io-impl) which the env-var name mangling cannot
+                      express. Uses the HDFS FileIO FQN.
 
-                      printf '%s\n' 'automq.table.topic.catalog.type=rest' 'automq.table.topic.catalog.uri=https://api.magnetar.binginternal.com/unity-catalog/api/2.1/unity-catalog/iceberg' 'automq.table.topic.catalog.warehouse=test_catalog1' 'automq.table.topic.catalog.io-impl=com.automq.hdfs.table.io.WebHdfsFileIO' 'automq.table.topic.catalog.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.url=https://api.magnetar.binginternal.com/schema-registry' 'automq.table.topic.schema.registry.config.bearer.auth.credentials.source=WORKLOAD_IDENTITY' 'automq.table.topic.schema.registry.config.credential.provider.scope=api://1c0b8c88-563f-4b97-abdf-207172a50d2c/.default' 'automq.table.topic.schema.registry.config.request.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.config.auto.register.schemas=false' >> /opt/automq/kafka/config/kraft/broker.properties
+                      printf '%s\n' 'automq.table.topic.catalog.type=rest' 'automq.table.topic.catalog.uri=https://api.magnetar.binginternal.com/unity-catalog/api/2.1/unity-catalog/iceberg' 'automq.table.topic.catalog.warehouse=test_catalog1' 'automq.table.topic.catalog.io-impl=com.automq.hdfs.table.io.WebHdfsFileIO' 'automq.table.topic.catalog.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.url=https://api.magnetar.binginternal.com/schema-registry' 'automq.table.topic.schema.registry.config.bearer.auth.credentials.source=WORKLOAD_IDENTITY' 'automq.table.topic.schema.registry.config.credential.provider.scope=api://1c0b8c88-563f-4b97-abdf-207172a50d2c/.default' 'automq.table.topic.schema.registry.config.request.header.subcluster=AKS-NorthEurope-FLEET' 'automq.table.topic.schema.registry.config.auto.register.schemas=false' >> "$CONFIG_FILE"
 
-                      # DEBUG: no 'exec' so the shell survives a start.sh crash;
-                      # on exit we print the code and hold the container Running
+
+                      # A broker on unformatted storage auto-formats its metadata
+                      directory on startup (AutoMQ behavior), so no explicit
+                      kafka-storage.sh format step is needed here.
+
+                      # DEBUG: no 'exec' so the shell survives a broker crash; on
+                      # exit we print the code and hold the container Running
                       # (sleep infinity) so server.log can be read via kubectl exec.
-                      # Swap back to application.yaml (exec ...) once fixed.
+                      # Swap back to automq-broker (exec ...) once fixed.
 
                       RC=0
 
-                      /opt/automq/scripts/start.sh up
-                      --process.roles broker
-                      --node.id "$NODE_ID"
-                      --controller.quorum.voters "$VOTERS"
-                      --cluster.id OB_fAKFJOMYdbIqpoJ6eSQ
-                      --s3.bucket dummy
-                      --s3.endpoint http://dummy
-                      --s3.region us-east-1
-                      || RC=$?
+                      /opt/automq/kafka/bin/kafka-server-start.sh "$CONFIG_FILE" || RC=$?
 
-                      echo "=== start.sh exited with code $RC ; holding container for debug (sleep infinity) ==="
+                      echo "=== kafka-server-start exited with code $RC ; holding container for debug (sleep infinity) ==="
 
                       sleep infinity
                   env:
+                    - name: KAFKA_CFG_PROCESS_ROLES
+                      value: broker
+                    - name: KAFKA_CFG_LISTENERS
+                      value: PLAINTEXT://:9092
+                    - name: KAFKA_CFG_INTER_BROKER_LISTENER_NAME
+                      value: PLAINTEXT
+                    - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
+                      value: CONTROLLER
+                    - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+                      value: >-
+                        CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL,SASL_PLAINTEXT:SASL_PLAINTEXT,SASL_SSL:SASL_SSL
+                    # Discover the DYNAMIC controller quorum via its MCS address
+                    # (a dynamic quorum has no fixed voter roster to hardcode).
+                    - name: KAFKA_CFG_CONTROLLER_QUORUM_BOOTSTRAP_SERVERS
+                      value: >-
+                        automq-controller-rongyu.magnetar-test.svc.clusterset.local:9093
+                    - name: KAFKA_CFG_CLUSTER_ID
+                      value: OB_fAKFJOMYdbIqpoJ6eSQ
+                    # Broker-side continuous self-balancing (start.sh used to inject
+                    # this; we render properties ourselves now, so set it explicitly).
+                    - name: KAFKA_CFG_METRIC_REPORTERS
+                      value: kafka.autobalancer.metricsreporter.AutoBalancerMetricsReporter
                     - name: KAFKA_CFG_S3_DATA_BUCKETS
                       value: >-
                         0@hdfs://automq?endpoint=https://hdfs-http-ipv4-mtprime-dube01-0.magnetar.binginternal.com:83/webhdfs/v1/MTPrime-DUBE01-0/user/rongyu/test/falcon/data
