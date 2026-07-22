@@ -22,7 +22,6 @@ import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.ByteBuffers;
 import org.apache.iceberg.util.DateTimeUtil;
-import org.apache.iceberg.util.UUIDUtil;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
@@ -163,7 +162,8 @@ public abstract class AbstractTypeAdapter<S> implements TypeAdapter<S> {
             }
         }
         if (uuid != null) {
-            return UUIDUtil.convert(uuid);
+            // Iceberg 1.10's Parquet UUIDWriter expects a java.util.UUID (1.6 expected the 16-byte encoding).
+            return uuid;
         }
         throw new IllegalArgumentException("Cannot convert " + sourceValue.getClass().getSimpleName() + " to " + targetType.typeId());
     }

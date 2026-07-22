@@ -21,6 +21,7 @@ package kafka.automq.table;
 
 import kafka.server.KafkaConfig;
 
+import com.automq.hdfs.table.auth.WorkloadIdentityAuthManager;
 import com.automq.stream.s3.operator.AwsObjectStorage;
 import com.automq.stream.s3.operator.BucketURI;
 import com.automq.stream.utils.IdURI;
@@ -205,7 +206,16 @@ public class CatalogFactory {
             // automq.table.topic.catalog.credential=
             // automq.table.topic.catalog.token=
             // automq.table.topic.catalog.scope=
+            //
+            // When no OAuth2 credential is configured but a bearer token can be resolved (static token, Azure Workload
+            // Identity, or the AAD_TOKEN env), select AutoMQ's WorkloadIdentityAuthManager via the Iceberg 1.10
+            // rest.auth.type SPI so every request carries a fresh token (a long-lived catalog otherwise fails once an
+            // initially-configured static token expires). Set automq.table.topic.catalog.token.scope=<AAD scope> to
+            // enable Workload Identity auto-refresh. To use FIC instead, set
+            // automq.table.topic.catalog.rest.auth.type=org.apache.iceberg.connect.auth.FicAuthManager plus
+            // fic.mi-client-id / fic.app-client-id.
             catalogImpl = "org.apache.iceberg.rest.RESTCatalog";
+            WorkloadIdentityAuthManager.maybeSelectAuthType(catalogConfigs, options);
             putDataBucketAsWarehouse(false);
         }
 

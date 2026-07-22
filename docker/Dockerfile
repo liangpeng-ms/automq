@@ -18,7 +18,7 @@ FROM docker.io/debian:bookworm
 
 MAINTAINER AutoMQ for Apache Kafka dev@automq.com
 
-RUN apt-get update && apt-get install -y ca-certificates dnsutils iputils-ping curl wget netcat-openbsd sysstat net-tools htop procps zlib1g vim less openjdk-17-jdk libjemalloc-dev ipset iproute2 && \
+RUN apt-get update && apt-get install -y ca-certificates dnsutils iputils-ping curl wget netcat-openbsd sysstat net-tools htop procps zlib1g vim less openjdk-17-jdk libjemalloc-dev ipset iproute2 dos2unix && \
     apt-get clean && rm -rf /var/lib/apt/lists /var/cache/apt/archives
 
 # Do not ask for confirmations when running apt-get, etc.
@@ -28,8 +28,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 COPY "./automq-*.tgz" /opt/kafka/kafka.tgz
 RUN tar -xzvf "/opt/kafka/kafka.tgz" -C /opt/kafka/ --one-top-level=kafka --strip-components 1 && rm "/opt/kafka/kafka.tgz"
+RUN dos2unix /opt/kafka/kafka/bin/*.sh && chmod +x /opt/kafka/kafka/bin/*.sh
 COPY scripts /opt/kafka/scripts
-RUN chmod +x /opt/kafka/scripts/*.sh
+RUN dos2unix /opt/kafka/scripts/*.sh && chmod +x /opt/kafka/scripts/*.sh
 
 RUN mkdir -p /data/kafka
 

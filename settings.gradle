@@ -106,7 +106,9 @@ include 'clients',
     's3stream',
     'automq-shell',
     'automq-log-uploader',
-    'automq-metrics'
+    'automq-metrics',
+    'automq-hdfs-common',
+    'automq-hdfs-table'
 
 project(":storage:api").name = "storage-api"
 rootProject.name = 'kafka'
