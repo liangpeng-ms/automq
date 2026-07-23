@@ -1,35 +1,26 @@
-# AutoMQ DYNAMIC-quorum CONTROLLER tier (KIP-853 reconfigurable quorum members).
+# AutoMQ DYNAMIC-quorum CONTROLLER SEED (one-shot cold-start seed).
 #
-# The CONTROLLER half of the separated topology. Deploy together with
-# automq-broker-rongyu (the BROKER half) and, on a fresh cluster.id, the
-# automq-controller-init-rongyu SEED (which cold-starts the quorum).
+# Seeds a brand-new KIP-853 dynamic (reconfigurable) quorum, so the real
+# automq-controller-rongyu members can bootstrap and JOIN it. It formats a
+# single-voter quorum with `kafka-storage.sh format --standalone` using a
+# dedicated node.id (100, outside the members' 0..N ordinal range) and points
+# controller.quorum.bootstrap.servers at ITSELF.
 #
-# Topology: N dedicated controllers (process.roles=controller), a DYNAMIC quorum.
-#   node.id = pod ordinal  -> 0 / 1 / 2 (kept out of the seed's id 100 and the
-#   brokers' 100000+ range). Each member advertises CONTROLLER://$POD_IP:9093 --
-#   the routable Pod IP, NOT a per-pod DNS name -- so members in OTHER clusters
-#   can reach each voter directly (per-pod cluster.local names are not exported
-#   across clusters; Falcon Pod IPs are regionally routable).
-#
-# How a member joins (see the container command):
-#   - Fresh storage: remove any stale voter carrying our node.id (a previous
-#     incarnation with a different directory.id), `format --no-initial-controllers`,
-#     then a background loop runs `add-controller` against the local controller
-#     until this node becomes a voter.
-#   - Existing storage: just restart (rejoin) -- the voter set persists in Raft.
-#
-# Dynamic-quorum notes:
-#   - Controller COUNT is elastic: scale `replicas` up and each new pod
-#     self-promotes via add-controller. Scaling DOWN requires an explicit
-#     remove-controller before deleting the pod (not automated here).
-#   - minReadySeconds gives each pod's add-controller time to land before the
-#     StatefulSet rolls the next one (FleetStatefulSet has no partitioned update).
-#   - podManagementPolicy: Parallel so all members start at once.
+# Lifecycle (run ONCE per fresh cluster.id):
+#   1. Deploy this seed FIRST (1 voter quorum comes up).
+#   2. Deploy automq-controller-rongyu (members format --no-initial-controllers
+#      and self-promote via add-controller until they are voters).
+#   3. Once the members (0..N) are all voters, retire the seed:
+#        kafka-metadata-quorum.sh --bootstrap-controller localhost:9093 \
+#          remove-controller --controller-id 100 --controller-directory-id <dir>
+#      then delete this Application. (Find <dir> in `describe --status`
+#      CurrentVoters for id 100.)
 #
 # NOTE: this entrypoint BYPASSES /opt/automq/scripts/start.sh on purpose --
-# start.sh hardcodes a STATIC `kafka-storage.sh format -g` (voters baked into
-# properties) and cannot do --no-initial-controllers / add-controller. We render
-# properties from KAFKA_CFG_* and drive the Kafka tools directly.
+# start.sh hardcodes a STATIC `kafka-storage.sh format -g` (voters baked in) and
+# has no route to --standalone. We render properties from KAFKA_CFG_* ourselves
+# and drive kafka-storage.sh / kafka-server-start.sh directly (same approach as
+# the automq-controller-rongyu members).
 #
 # IMPORTANT: requires a KIP-853 image (kafka-storage.sh --standalone /
 # --no-initial-controllers, kafka-metadata-quorum.sh add/remove-controller).
@@ -40,7 +31,7 @@ metadata:
   annotations:
   labels:
     microsoft-falcon.net/workload-state: stateful
-  name: automq-controller-rongyu
+  name: automq-controller-init-rongyu
   namespace: magnetar-test
 spec:
   priorityClassName: prod
@@ -57,7 +48,7 @@ spec:
         apiVersion: v1
         kind: Service
         metadata:
-          name: automq-controller-rongyu
+          name: automq-controller-init-rongyu
           namespace: magnetar-test
         spec:
           clusterIP: None
@@ -73,7 +64,7 @@ spec:
           publishNotReadyAddresses: true
           selector:
             app.kubernetes.io/component: service
-            app.kubernetes.io/instance: magnetar-test.automq-controller-rongyu
+            app.kubernetes.io/instance: magnetar-test.automq-controller-init-rongyu
           type: ClusterIP
     - manifest:
         apiVersion: apps/v1
@@ -81,21 +72,17 @@ spec:
         metadata:
           labels:
             app.kubernetes.io/component: service
-            app.kubernetes.io/instance: magnetar-test.automq-controller-rongyu
-          name: automq-controller-rongyu
+            app.kubernetes.io/instance: magnetar-test.automq-controller-init-rongyu
+          name: automq-controller-init-rongyu
           namespace: magnetar-test
         spec:
-          replicas: 3
+          replicas: 1
           podManagementPolicy: Parallel
-          # Each member must stay Ready this long before the StatefulSet rolls the
-          # next one, giving the background add-controller time to promote a
-          # joining member to a voter first.
-          minReadySeconds: 60
           selector:
             matchLabels:
               app.kubernetes.io/component: service
-              app.kubernetes.io/instance: magnetar-test.automq-controller-rongyu
-          serviceName: automq-controller-rongyu
+              app.kubernetes.io/instance: magnetar-test.automq-controller-init-rongyu
+          serviceName: automq-controller-init-rongyu
           template:
             metadata:
               annotations:
@@ -104,7 +91,7 @@ spec:
                 prometheus.io/scrape: 'true'
               labels:
                 app.kubernetes.io/component: service
-                app.kubernetes.io/instance: magnetar-test.automq-controller-rongyu
+                app.kubernetes.io/instance: magnetar-test.automq-controller-init-rongyu
                 azure.workload.identity/use: 'true'
             spec:
               serviceAccountName: falconfleet-magnetar-test-sa
@@ -116,26 +103,18 @@ spec:
                       set -euo pipefail
 
 
-                      # test-env convenience: install jq if missing (used to parse
-                      # the quorum-status JSON below).
+                      # Dedicated seed node.id, outside the members' 0..N ordinal
+                      range. advertised.listeners MUST be the routable Pod IP so
+                      cross-cluster members can reach this voter directly (per-pod
+                      cluster.local DNS is NOT exported across clusters).
 
-                      command -v jq >/dev/null 2>&1 || { apt-get update && apt-get install -y jq; }
-
-
-                      # Per-pod identity from the StatefulSet ordinal
-                      (HOSTNAME = automq-controller-rongyu-<N>). advertised.listeners
-                      MUST be the routable Pod IP so cross-cluster peers can reach
-                      this voter directly.
-
-                      NODE_ID="${HOSTNAME##*-}"
-
-                      export KAFKA_CFG_NODE_ID="$NODE_ID"
+                      export KAFKA_CFG_NODE_ID="100"
 
                       export KAFKA_CFG_ADVERTISED_LISTENERS="CONTROLLER://$POD_IP:9093"
 
 
-                      # Render controller.properties from every KAFKA_CFG_* env var
-                      # (drop KAFKA_CFG_ prefix, lowercase, '_' -> '.').
+                      # Render controller.properties from every KAFKA_CFG_* env
+                      # var (drop KAFKA_CFG_ prefix, lowercase, '_' -> '.').
 
                       CONFIG_FILE=/opt/automq/kafka/config/kraft/controller.properties
 
@@ -151,53 +130,15 @@ spec:
 
                       LOG_DIR="${KAFKA_CFG_LOG_DIRS}"
 
-                      BOOTSTRAP="${KAFKA_CFG_CONTROLLER_QUORUM_BOOTSTRAP_SERVERS}"
 
-                      # Small heap so the CLI tools do not OOM the container.
-
-                      mq(){ KAFKA_HEAP_OPTS="-Xmx128m -Xms64m" "$BIN/kafka-metadata-quorum.sh" "$@"; }
-
-                      fmt(){ KAFKA_HEAP_OPTS="-Xmx128m -Xms64m" "$BIN/kafka-storage.sh" "$@"; }
-
-                      # CurrentVoters JSON array from `describe --status` ($1 = bootstrap endpoint).
-
-                      voters(){ mq --bootstrap-controller "$1" describe --status 2>/dev/null | sed -n 's/^CurrentVoters:[[:space:]]*//p'; }
-
+                      # Seed a brand-new single-voter dynamic quorum only once.
 
                       if [ ! -f "$LOG_DIR/meta.properties" ]; then
-                        echo "[init] node $NODE_ID: fresh storage, joining quorum via $BOOTSTRAP"
-                        # Our storage was wiped, so any voter with our node.id is a stale
-                        # incarnation (different directory id). Remove it before re-joining.
-                        # '|| true' is REQUIRED: under `set -euo pipefail` a failing command
-                        # substitution (seed briefly unreachable at cold start) would otherwise
-                        # kill the pod here before it ever formats/starts (CrashLoop).
-                        OLD_DIR=$(voters "$BOOTSTRAP" | jq -r --argjson id "$NODE_ID" '.[] | select(.id==$id) | .directoryId // empty' 2>/dev/null | head -n1) || true
-                        if [ -n "$OLD_DIR" ]; then
-                          echo "[init] node $NODE_ID: removing stale voter (dir=$OLD_DIR)"
-                          mq --bootstrap-controller "$BOOTSTRAP" remove-controller \
-                            --controller-id "$NODE_ID" --controller-directory-id "$OLD_DIR" || true
-                        else
-                          echo "[init] node $NODE_ID: no stale voter to remove"
-                        fi
-                        echo "[init] node $NODE_ID: formatting storage (--no-initial-controllers)"
-                        fmt format -t "$KAFKA_CFG_CLUSTER_ID" -c "$CONFIG_FILE" --no-initial-controllers
-                        NEW_DIR=$(sed -n 's/^directory.id=//p' "$LOG_DIR/meta.properties")
-                        echo "[init] node $NODE_ID: formatted, directory.id=$NEW_DIR"
-                        # Background: once up & caught up as an observer, promote to voter.
-                        ( echo "[promote] node $NODE_ID: waiting for local controller to start..."
-                          until mq --bootstrap-controller localhost:9093 describe --status >/dev/null 2>&1; do sleep 3; done
-                          echo "[promote] node $NODE_ID: local controller up, will add-controller until voter"
-                          for _ in $(seq 1 30); do
-                            if voters localhost:9093 | jq -e --arg d "$NEW_DIR" 'any(.[]; .directoryId==$d)' >/dev/null 2>&1; then
-                              echo "[promote] node $NODE_ID: promoted to voter (dir=$NEW_DIR)"; exit 0
-                            fi
-                            echo "[promote] node $NODE_ID: not a voter yet, running add-controller..."
-                            mq --bootstrap-controller localhost:9093 --command-config "$CONFIG_FILE" add-controller || true
-                            sleep 5
-                          done
-                          echo "[promote] WARN: node $NODE_ID NOT promoted to voter after 30 tries" >&2 ) &
+                        echo "[seed] node 100: formatting single-voter dynamic quorum (--standalone)"
+                        KAFKA_HEAP_OPTS="-Xmx128m -Xms64m" "$BIN/kafka-storage.sh" \
+                          format -t "$KAFKA_CFG_CLUSTER_ID" -c "$CONFIG_FILE" --standalone
                       else
-                        echo "[init] node $NODE_ID: storage already formatted, starting (rejoin)"
+                        echo "[seed] node 100: storage already formatted, starting (rejoin)"
                       fi
 
 
@@ -209,11 +150,10 @@ spec:
                       value: CONTROLLER://:9093
                     - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
                       value: CONTROLLER
-                    # Discover the quorum via BOTH the members' own MCS address and
-                    # the seed's -- either can answer bootstrap during cold start.
+                    # A standalone seed IS the quorum; bootstrap points at itself.
                     - name: KAFKA_CFG_CONTROLLER_QUORUM_BOOTSTRAP_SERVERS
                       value: >-
-                        automq-controller-rongyu.magnetar-test.svc.clusterset.local:9093,automq-controller-init-rongyu.magnetar-test.svc.clusterset.local:9093
+                        automq-controller-init-rongyu.magnetar-test.svc.clusterset.local:9093
                     - name: KAFKA_CFG_CLUSTER_ID
                       value: OB_fAKFJOMYdbIqpoJ6eSQ
                     # Cluster-wide defaults the controller applies when auto-creating
@@ -268,7 +208,7 @@ spec:
                     tcpSocket:
                       port: controller
                     timeoutSeconds: 10
-                  name: automq-controller-rongyu
+                  name: automq-controller-init-rongyu
                   ports:
                     - containerPort: 9093
                       name: controller
