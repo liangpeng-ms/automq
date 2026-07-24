@@ -1,0 +1,124 @@
+# AutoMQ perf-test CLIENT pod (dedicated load generator).
+#
+# WHY: running hdfs-perf-load.sh INSIDE a broker pod makes the producer JVMs fight the
+# broker for the pod's 4 CPU cores. Observed: with 12 producers, broker-0 pinned at
+# 3827m/4000m CPU while broker-1/2 sat at ~800m -- so measured throughput (~156 MB/s) was
+# the single-pod CPU ceiling, NOT the 3-broker cluster ceiling. This pod isolates the
+# load generator: producers run HERE (8 cores), brokers stay free to do real work, and
+# all 3 brokers can be driven at once.
+#
+# Wrapped as a Falcon Application (apis.clusterfleet.io/v1alpha1) so it schedules on
+# Falcon nodes exactly like the broker/controller tiers (same nodeSelector / priorityClass).
+#
+# It reuses the SAME automq image -> the Kafka CLI (/opt/automq/kafka/bin) and
+# kafka-producer-perf-test.sh are already present. No workload identity is needed: the
+# client only speaks the Kafka protocol to the brokers; all HDFS/WAL writes (and their
+# AAD tokens) happen on the broker side, never here.
+#
+# Deploy:
+#   kubectl apply -f automq-perf-client.yaml
+# Load the script and run against ALL 3 brokers (note the BOOT override -> broker DNS):
+#   kubectl cp hdfs-perf-load.sh magnetar-test/<client-pod>:/tmp/load.sh
+#   kubectl exec -it -n magnetar-test <client-pod> -- env PRODUCERS=12 RUN_CONSUMER=0 bash /tmp/load.sh
+# (hdfs-perf-load.sh already defaults BOOT to all 3 broker pods via headless DNS.)
+apiVersion: apis.clusterfleet.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+  labels:
+    microsoft-falcon.net/workload-state: stateless
+  name: automq-perf-client-rongyu
+  namespace: magnetar-test
+spec:
+  priorityClassName: prod
+  rollbackStrategy:
+    minReadyReplicas: 0
+    minReadySeconds: 0
+    progressDeadlineSeconds: 0
+    revisionHistoryLimit: 5
+  rolloutStrategy:
+    minAvailableReplicas: 100%
+  version: '20260624.2'
+  workload:
+    - manifest:
+        # Falcon requires every Application to declare a ClusterIP Service, even for a
+        # headless load generator that exposes nothing. This is a placeholder Service
+        # (no real port is served) purely to satisfy the admission webhook.
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: automq-perf-client-rongyu
+          namespace: magnetar-test
+        spec:
+          clusterIP: None
+          ports:
+            - name: placeholder
+              port: 9092
+              protocol: TCP
+              targetPort: 9092
+          publishNotReadyAddresses: true
+          selector:
+            app.kubernetes.io/component: service
+            app.kubernetes.io/instance: magnetar-test.automq-perf-client-rongyu
+          type: ClusterIP
+    - manifest:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          labels:
+            app.kubernetes.io/component: service
+            app.kubernetes.io/instance: magnetar-test.automq-perf-client-rongyu
+          name: automq-perf-client-rongyu
+          namespace: magnetar-test
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app.kubernetes.io/component: service
+              app.kubernetes.io/instance: magnetar-test.automq-perf-client-rongyu
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/component: service
+                app.kubernetes.io/instance: magnetar-test.automq-perf-client-rongyu
+            spec:
+              # NOTE: Falcon does NOT support pinning to a specific standard cluster
+              # (they are fungible/not name-targetable, per FalconDocs FleetArchitecture).
+              # So this pod may land on a different standard cluster than the brokers.
+              # That is fine: the perf script reaches brokers via clusterset.local
+              # cross-cluster DNS, which resolves the headless Service to all broker pod
+              # IPs fleet-wide. No cluster.name field exists / is honored.
+              containers:
+                - command:
+                    - bash
+                    - '-c'
+                    # Idle forever; we drive it via `kubectl exec`. `exec sleep` so the
+                    # container's PID 1 is the sleep (clean SIGTERM on delete).
+                    - 'exec sleep infinity'
+                  env:
+                    # Small client heap: the perf CLI does not need much, and this keeps
+                    # 12 producers well under the container memory limit. hdfs-perf-load.sh
+                    # also exports this itself, but set it here too for ad-hoc CLI use.
+                    - name: KAFKA_HEAP_OPTS
+                      value: '-Xms256m -Xmx512m'
+                  image: msbingmtcr.azurecr.io/rongyu/automq:test0712sr
+                  imagePullPolicy: Always
+                  name: automq-perf-client-rongyu
+                  resources:
+                    # 8 cores so producers never starve for CPU (broker pods have 4).
+                    # Memory is generous headroom for many small-heap producer JVMs.
+                    limits:
+                      cpu: 8000m
+                      memory: 12G
+                    requests:
+                      cpu: 8000m
+                      memory: 12G
+              nodeSelector:
+                kubernetes.azure.com/mode: user
+                kubernetes.io/os: linux
+                microsoft-falcon.net/ap-connectivity: ipv4regional
+                microsoft-falcon.net/cloud: azure
+                microsoft-falcon.net/cross-region-connectivity: regional
+                microsoft-falcon.net/use-case: generic
+                scheduler.clusterfleet.io/ready: 'true'
+              priorityClassName: prod
