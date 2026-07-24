@@ -1,11 +1,5 @@
 # AutoMQ on HDFS(WebHDFS)性能测试记录
 
-> 本文件只记录**测试参数、集群配置、详细结果**三项。详细分析另做,此处只在顶部给结论。
-> 与旧文件 `PERF-TEST-LOG.md` 的区别:本轮使用更新后的 `hdfs-perf-load.sh`
-> (新增 WALL-CLOCK 口径、`RECORD_SIZES` 支持 KB 简写),并固定单一 record size 扫 producer。
-
----
-
 ## 测试结论
 
 **延迟判定标准**:可接受的写延迟应控制在 **2 秒附近或以下**。延迟(尤其 p99 / max)一旦到 **3–4 秒**即视为不可接受——**此时即使吞吐数字高,也不是稳定可靠的结果,必须标注**。下表"可靠性"列即据此判定。
@@ -26,26 +20,24 @@
 - 再加并发(6/12 producer)吞吐**不再上升甚至下降**,而延迟迅速恶化到 3s 以上乃至 7–11s → **不可靠**。
 - 单 broker 12 producer 曾多次堆爆 / 延迟爆炸,不建议单节点跑高并发。
 
-### 2. 三 broker
+### 2. 3 broker
 
-| producer(16KB) | 吞吐 SUM / WALL(MB/s) | 延迟 p99 / max | 可靠性 | 来源 |
-|---|---|---|---|---|
-| 4 | 342 / 241 | ~0.7–0.8s / ~0.8–1.2s | ✅ 可靠(优) | G1 |
-| 6 | **369 / 261** | ~1.2–1.5s / ~1.4–1.7s | ✅ 可靠 | G1 |
-| 12 | 365 / 265 | ~2.3–3.0s / ~3.1–3.7s | ⚠️ 延迟超 2s,不稳定 | G1 |
+| producer(16KB) | 吞吐 SUM / WALL(MB/s) | server 峰值 | 延迟 p99 / max | 可靠性 | 来源 |
+|---|---|---|---|---|---|
+| 4 | 342 / 241 | — | ~0.7–0.8s / ~0.8–1.2s | ✅ 可靠(优) | G1 |
+| 6 | **369 / 261** | ~150(单 broker 曲线)/ 3 broker 各自 Max 合计 ~427 | ~1.2–1.5s / ~1.4–1.7s | ✅ 可靠 | G1 / G4 长跑 |
+| 12 | 365 / 265 | — | ~2.3–3.0s / ~3.1–3.7s | ⚠️ 延迟超 2s,不稳定 | G1 |
 
-- **三 broker 稳定吞吐峰值:~369 MB/s(SUM)/ ~261 MB/s(WALL),在 6 producer / 16KB**,延迟 p99<1.5s、max<1.7s,**稳定可靠**。
-- **长跑 server 端峰值**:16KB / 6 producer 长跑三 broker produce 各自 Max 154+132+141 ≈ **~427 MB/s**(G4,非同刻求和;该轮 CPU 90–99%、撞 HDFS quota,属压力上限而非稳定值)。
+- **3 broker 稳定吞吐峰值:~369 MB/s(SUM)/ ~261 MB/s(WALL),在 6 producer / 16KB**,延迟 p99<1.5s、max<1.7s,**稳定可靠**。
+- **3 broker server 端长跑(G4,16KB / 6 producer)**:produce 面板单 broker 曲线峰值 ~150 MB/s,3 broker 各自 Max 154+132+141 合计 **~427 MB/s**(各 broker Max 非同刻,属上界口径);该轮 CPU 90–99%、撞 HDFS quota,是压力上限而非稳定值。
 - **12 producer 不增吞吐**(365 ≈ 6p 的 369)**却把延迟推到 3–4s** → 不可靠,不是有效工作点。
 - 其他 record size 稳定峰值:1KB 6p 291/175(延迟达标);64KB 6p 365/276(max ~2.4s 临界),64KB 12p 延迟飙到 5–7s ❌。
 
-### 3. 横向扩(单节点 → 三 broker)
+### 3. 横向扩(单节点 → 3 broker)
 
-- 稳定吞吐:单节点 ~150 → 三 broker ~369(SUM,16KB),约 **2.4×**;且同并发下三 broker 延迟远低于单节点(负载分摊)。
+- 稳定吞吐:单节点 ~150 → 3 broker ~369(SUM,16KB),约 **2.4×**;且同并发下 3 broker 延迟远低于单节点(负载分摊)。
 - 结论:**加 broker 同时提升了吞吐上限并降低了延迟**,横向扩有效。
-- 两种拓扑的共同拐点特征:**producer 增到延迟 p99/max 突破 2s 时,吞吐已不再上升** —— 该点即最佳工作点(单节点≈4 producer,三 broker≈6 producer)。
-
-> 注:所有 server 峰值来自 Grafana 面板的 Max 列,为各 broker 各自峰值(不一定同刻),属上界口径;稳定值以延迟达标档的客户端 SUM/WALL 为准。
+- 两种拓扑的共同拐点特征:**producer 增到延迟 p99/max 突破 2s 时,吞吐已不再上升** —— 该点即最佳工作点(单节点≈4 producer,3 broker≈6 producer)。
 
 ---
 
@@ -404,7 +396,7 @@ kubectl exec -it -n magnetar-test $client -- env \
 | automq-broker-rongyu-0 | 154 MB/s | 0 B/s |
 | automq-broker-rongyu-1 | 132 MB/s | 77.5 kB/s |
 | automq-broker-rongyu-2 | 141 MB/s | 310 kB/s |
-| **三 broker Max 合计** | **~427 MB/s**(各自 Max 之和,非同刻) | — |
+| **3 broker Max 合计** | **~427 MB/s**(各自 Max 之和,非同刻) | — |
 
 > 用户观测口径:压测中吞吐 154 + 132 + 127(≈413),CPU ~90%,mem 接近 4G。
 
